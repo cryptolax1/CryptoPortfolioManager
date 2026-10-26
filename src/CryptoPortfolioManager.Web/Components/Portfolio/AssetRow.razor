@@ -1,0 +1,33 @@
+@using CryptoPortfolioManager.Core.Models
+
+<tr class="asset-row @(expanded ? "expanded" : null)" @onclick="Toggle">
+    <td class="chev-cell">
+        <button type="button" class="chev" aria-expanded="@(expanded ? "true" : "false")" aria-label="@(expanded ? "Collapse" : "Expand") @Asset.Name"
+                @onclick="Toggle" @onclick:stopPropagation="true">▸</button>
+    </td>
+    <td class="name">@Asset.Name</td>
+    <td class="symbol">@Asset.Symbol</td>
+    <td class="num">@Format.Quantity(Asset.Quantity)</td>
+    <td class="num">@Format.Usd(Asset.PriceUsd)</td>
+    <td class="num strong">@Format.Usd(Asset.ValueUsd)</td>
+    <DeltaCell Value="Asset.DeltaFor(DeltaPeriod.Ytd)" />
+    <DeltaCell Value="Asset.DeltaFor(DeltaPeriod.ThreeMonths)" />
+    <DeltaCell Value="Asset.DeltaFor(DeltaPeriod.OneMonth)" />
+    <DeltaCell Value="Asset.DeltaFor(DeltaPeriod.OneWeek)" />
+    <DeltaCell Value="Asset.DeltaFor(DeltaPeriod.OneDay)" />
+</tr>
+@if (expanded)
+{
+    <tr class="details-row">
+        <td></td>
+        <td colspan="10"><PositionsTable Positions="Asset.Positions" /></td>
+    </tr>
+}
+
+@code {
+    [Parameter, EditorRequired] public AssetOverview Asset { get; set; } = default!;
+
+    private bool expanded;
+
+    private void Toggle() => expanded = !expanded;
+}

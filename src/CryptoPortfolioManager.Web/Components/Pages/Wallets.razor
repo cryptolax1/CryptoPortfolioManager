@@ -1,0 +1,204 @@
+@using CryptoPortfolioManager.Core.Entities
+@using CryptoPortfolioManager.Core.Models
+@using CryptoPortfolioManager.Core.Services
+@using CryptoPortfolioManager.Web.Components.Portfolio
+@page "/wallets"
+@inject IWalletService WalletService
+@rendermode InteractiveServer
+
+<PageTitle>Wallets</PageTitle>
+
+<h1>Wallets</h1>
+<p class="muted lead">Wallets that the <strong>Re-scan wallets</strong> button reads. Only tokens on the <a href="/whitelist">whitelist</a> are picked up. A CEX is stored but is not scanned on-chain.</p>
+
+@if (loadError is not null)
+{
+    <div class="alert">@loadError</div>
+}
+
+<form class="form-card" @onsubmit="SaveAsync" @onsubmit:preventDefault>
+    <h2>@(editingId is null ? "Add wallet" : "Edit wallet")</h2>
+    <div class="form-grid">
+        <label>Name
+            <input @bind="name" maxlength="100" placeholder="Cronos Main" />
+        </label>
+        <label>Wallet type
+            <select @bind="type">
+                @foreach (var t in Enum.GetValues<WalletType>())
+                {
+                    <option value="@t">@Format.WalletTypeLabel(t)</option>
+                }
+            </select>
+        </label>
+        <label>Source
+            <input @bind="source" maxlength="100" placeholder="Metamask" />
+        </label>
+        <label class="wide">Wallet address
+            <input class="mono" @bind="address" maxlength="120" placeholder="0x… / bc1… / 3… / r… / addr1… / G… / Solana" spellcheck="false" />
+        </label>
+    </div>
+    @if (formError is not null)
+    {
+        <div class="alert form-alert">@formError</div>
+    }
+    <div class="form-actions">
+        <button class="btn" type="submit" disabled="@busy">@(editingId is null ? "Add wallet" : "Save changes")</button>
+        @if (editingId is not null)
+        {
+            <button class="btn btn-secondary" type="button" @onclick="CancelEdit">Cancel</button>
+        }
+    </div>
+</form>
+
+@if (wallets is null)
+{
+    <p class="muted">Loading…</p>
+}
+else if (wallets.Count == 0)
+{
+    <div class="empty-state">
+        <div class="empty-icon" aria-hidden="true">◌</div>
+        <h2>No wallets yet</h2>
+        <p>Add a wallet above to include it in the scan.</p>
+    </div>
+}
+else
+{
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Type</th>
+                <th>Source</th>
+                <th>Wallet address</th>
+                <th>Last scan</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var wallet in wallets)
+            {
+                <tr>
+                    <td class="name">@wallet.Name</td>
+                    <td><span class="pill pill-@wallet.Type.ToString().ToLowerInvariant()">@Format.WalletTypeLabel(wallet.Type)</span></td>
+                    <td>@wallet.Source</td>
+                    <td class="mono addr" title="@wallet.Address">@wallet.Address</td>
+                    <td>
+                        @if (wallet.Type == WalletType.Cex)
+                        {
+                            <span class="muted">not scanned</span>
+                        }
+                        else if (wallet.LastScanError is not null)
+                        {
+                            <span class="delta-neg" title="@wallet.LastScanError">failed</span>
+                            <span class="muted">(@(wallet.LastScannedAtUtc is { } ok ? "last ok " + Format.Timestamp(ok) : "never succeeded"))</span>
+                        }
+                        else
+                        {
+                            <span class="@(wallet.LastScannedAtUtc is null ? "muted" : "")">@(wallet.LastScannedAtUtc is { } t ? Format.Timestamp(t) : "never")</span>
+                        }
+                    </td>
+                    <td class="row-actions">
+                        @if (confirmDeleteId == wallet.Id)
+                        {
+                            <span class="muted">Delete wallet and its scanned positions?</span>
+                            <button class="btn btn-small btn-danger" @onclick="() => DeleteAsync(wallet.Id)">Delete</button>
+                            <button class="btn btn-small btn-secondary" @onclick="() => confirmDeleteId = null">Cancel</button>
+                        }
+                        else
+                        {
+                            <button class="btn btn-small btn-secondary" @onclick="() => Edit(wallet)">Edit</button>
+                            <button class="btn btn-small btn-secondary" @onclick="() => confirmDeleteId = wallet.Id">Delete</button>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private IReadOnlyList<Wallet>? wallets;
+    private string? loadError;
+    private string? formError;
+    private bool busy;
+    private int? editingId;
+    private int? confirmDeleteId;
+
+    private string name = "";
+    private string address = "";
+    private string source = "";
+    private WalletType type = WalletType.Hot;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            wallets = await WalletService.GetWalletsAsync();
+            loadError = null;
+        }
+        catch (Exception ex)
+        {
+            loadError = $"The wallets could not be loaded: {ex.Message}";
+        }
+    }
+
+    private void Edit(Wallet wallet)
+    {
+        editingId = wallet.Id;
+        name = wallet.Name;
+        address = wallet.Address;
+        source = wallet.Source;
+        type = wallet.Type;
+        formError = null;
+    }
+
+    private void CancelEdit()
+    {
+        editingId = null;
+        name = address = source = "";
+        type = WalletType.Hot;
+        formError = null;
+    }
+
+    private async Task SaveAsync()
+    {
+        busy = true;
+        try
+        {
+            var input = new WalletInput(address, name, type, source);
+            var result = editingId is { } id ? await WalletService.UpdateAsync(id, input) : await WalletService.AddAsync(input);
+            formError = result.Error;
+            if (result.Ok)
+            {
+                CancelEdit();
+                await LoadAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            formError = $"Saving failed: {ex.Message}";
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task DeleteAsync(int id)
+    {
+        confirmDeleteId = null;
+        try
+        {
+            await WalletService.DeleteAsync(id);
+            if (editingId == id) CancelEdit();
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            loadError = $"Deleting failed: {ex.Message}";
+        }
+    }
+}

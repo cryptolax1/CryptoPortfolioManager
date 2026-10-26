@@ -1,0 +1,74 @@
+@using CryptoPortfolioManager.Core.Entities
+@using CryptoPortfolioManager.Core.Services
+@using CryptoPortfolioManager.Web.Components.Portfolio
+@page "/log"
+@inject IPriceSyncService PriceSync
+@rendermode InteractiveServer
+
+<PageTitle>Log</PageTitle>
+
+<h1>Price update log</h1>
+<p class="muted lead">Every price update with its outcome. Errors that you may have dismissed on the portfolio page are kept here. Position changes are on the <a href="/history">History</a> page.</p>
+
+@if (loadError is not null)
+{
+    <div class="alert">@loadError</div>
+}
+else if (logs is null)
+{
+    <p class="muted">Loading…</p>
+}
+else if (logs.Count == 0)
+{
+    <div class="empty-state">
+        <h2>No price updates yet</h2>
+        <p>Entries appear here after the first "Update prices".</p>
+    </div>
+}
+else
+{
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Started</th>
+                <th>Completed</th>
+                <th>Status</th>
+                <th>Details</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var log in logs)
+            {
+                <tr>
+                    <td>@Format.Timestamp(log.StartedAtUtc)</td>
+                    <td>@(log.CompletedAtUtc is { } done ? Format.Timestamp(done) : "–")</td>
+                    <td><span class="@StatusClass(log.Status)">@log.Status</span></td>
+                    <td>
+                        @if (!string.IsNullOrWhiteSpace(log.ErrorMessage))
+                        {
+                            <pre class="alert-detail">@log.ErrorMessage</pre>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private IReadOnlyList<PriceUpdateLog>? logs;
+    private string? loadError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { logs = await PriceSync.GetRecentLogsAsync(); }
+        catch (Exception ex) { loadError = $"Could not load the log: {ex.Message}"; }
+    }
+
+    private static string StatusClass(PriceUpdateStatus status) => status switch
+    {
+        PriceUpdateStatus.Failed => "delta-neg",
+        PriceUpdateStatus.Succeeded => "delta-pos",
+        _ => ""
+    };
+}

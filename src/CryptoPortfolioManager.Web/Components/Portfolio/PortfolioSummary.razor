@@ -1,0 +1,20 @@
+@using CryptoPortfolioManager.Core.Models
+
+<div class="summary">
+    <div>
+        <div class="summary-label">Total value</div>
+        <div class="summary-value">@Format.Usd(Portfolio.TotalValueUsd)</div>
+    </div>
+    <div>
+        <div class="summary-label">Assets</div>
+        <div class="summary-value">@Portfolio.Assets.Count</div>
+    </div>
+    @if (Portfolio.AssetsWithoutPrice > 0)
+    {
+        <div class="summary-note">@Portfolio.AssetsWithoutPrice asset(s) without a price are not included in the total.</div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public PortfolioOverview Portfolio { get; set; } = default!;
+}

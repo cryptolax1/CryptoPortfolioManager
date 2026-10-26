@@ -1,0 +1,92 @@
+@using CryptoPortfolioManager.Core.Entities
+@using CryptoPortfolioManager.Core.Models
+@using CryptoPortfolioManager.Core.Services
+@inject IPriceSyncService PriceSync
+
+<section class="sync-panel">
+    <div>
+        <span class="muted">Last successful price update:</span>
+        <strong>@(status?.LastSuccessfulUtc is { } last ? Format.Timestamp(last) : "never")</strong>
+    </div>
+    <div class="sync-actions">
+        @Actions
+        <button class="btn" disabled="@running" @onclick="RunAsync">@(running ? "Updating prices…" : "Update prices")</button>
+    </div>
+</section>
+
+@if (notice is not null)
+{
+    <DismissibleMessage @key="noticeVersion" AutoHideSeconds="5">@notice</DismissibleMessage>
+}
+
+@if (failure is { } log)
+{
+    <DismissibleMessage @key="noticeVersion" CssClass="alert sync-alert">
+        <strong>@(log.Status == PriceUpdateStatus.Failed ? "Price update failed" : "Price update partially succeeded")</strong>
+        <span class="muted"> (@Format.Timestamp(log.CompletedAtUtc ?? log.StartedAtUtc)). Details on the <a href="/log">Log</a> page.</span>
+        @if (!string.IsNullOrWhiteSpace(log.ErrorMessage))
+        {
+            <pre class="alert-detail">@Shorten(log.ErrorMessage)</pre>
+        }
+    </DismissibleMessage>
+}
+
+@code {
+    private PriceSyncStatus? status;
+    private string? notice;
+    private PriceUpdateLog? failure;
+    private int noticeVersion;
+    private bool running;
+
+    [Parameter] public EventCallback OnSynced { get; set; }
+
+    /// <summary>Extra buttons shown next to "Update prices".</summary>
+    [Parameter] public RenderFragment? Actions { get; set; }
+
+    protected override async Task OnInitializedAsync() => await LoadStatusAsync();
+
+    private static string Shorten(string text) => text.Length <= 400 ? text : text[..400] + "…";
+
+    private async Task LoadStatusAsync()
+    {
+        try
+        {
+            status = await PriceSync.GetStatusAsync();
+        }
+        catch (Exception ex)
+        {
+            notice = $"The update status could not be loaded: {ex.Message}";
+        }
+    }
+
+    private async Task RunAsync()
+    {
+        running = true;
+        notice = null;
+        failure = null;
+        noticeVersion++;
+        try
+        {
+            var result = await PriceSync.SyncAsync();
+            notice = result.AlreadyRunning
+                ? "A price update is already running."
+                : result.Status == PriceUpdateStatus.Failed
+                    ? null
+                    : $"Update finished: {result.CurrentPricesStored} new prices, {result.HistoricalSnapshotsStored} historical prices stored.";
+
+            await LoadStatusAsync();
+            // Only a problem from this run is shown here; older ones live on the Log page.
+            if (!result.AlreadyRunning && status?.LatestLog is { Status: PriceUpdateStatus.Failed or PriceUpdateStatus.PartiallySucceeded } log)
+                failure = log;
+            await OnSynced.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            notice = $"The price update failed: {ex.Message}";
+        }
+        finally
+        {
+            running = false;
+        }
+    }
+}

@@ -1,0 +1,54 @@
+@implements IDisposable
+
+@if (visible)
+{
+    <div class="@CssClass dismissible" role="status">
+        <div class="dismissible-body">@ChildContent</div>
+        <button type="button" class="dismiss-btn" aria-label="Dismiss" title="Dismiss" @onclick="Hide">×</button>
+    </div>
+}
+
+@code {
+    private bool visible = true;
+    private CancellationTokenSource? timer;
+
+    /// <summary>"notice" or "alert sync-alert".</summary>
+    [Parameter] public string CssClass { get; set; } = "notice";
+
+    /// <summary>When set, the message disappears by itself after this many seconds; the cross always works.</summary>
+    [Parameter] public int? AutoHideSeconds { get; set; }
+
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    protected override void OnInitialized()
+    {
+        if (AutoHideSeconds is not { } seconds) return;
+
+        timer = new CancellationTokenSource();
+        _ = HideAfterAsync(TimeSpan.FromSeconds(seconds), timer.Token);
+    }
+
+    private async Task HideAfterAsync(TimeSpan delay, CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(delay, ct);
+            await InvokeAsync(Hide);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private void Hide()
+    {
+        visible = false;
+        StateHasChanged();
+    }
+
+    public void Dispose()
+    {
+        timer?.Cancel();
+        timer?.Dispose();
+    }
+}

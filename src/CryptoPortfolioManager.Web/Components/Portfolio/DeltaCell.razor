@@ -1,0 +1,6 @@
+<td class="num @Format.DeltaClass(Value)">@Format.Percent(Value)</td>
+
+@code {
+    /// <summary>Fraction (0.05 = +5%); null renders as an empty cell.</summary>
+    [Parameter] public decimal? Value { get; set; }
+}

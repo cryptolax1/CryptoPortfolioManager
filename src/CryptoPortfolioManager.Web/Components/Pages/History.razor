@@ -1,0 +1,73 @@
+@using CryptoPortfolioManager.Core.Entities
+@using CryptoPortfolioManager.Core.Services
+@using CryptoPortfolioManager.Web.Components.Portfolio
+@page "/history"
+@inject IPositionHistoryService HistoryService
+@rendermode InteractiveServer
+
+<PageTitle>History</PageTitle>
+
+<h1>Position history</h1>
+<p class="muted lead">Every time a wallet scan (or a wallet/whitelist change) adds, changes or removes a position, it is logged here. The current portfolio only shows what the last scan found; this log shows what you held before.</p>
+
+@if (loadError is not null)
+{
+    <div class="alert">@loadError</div>
+}
+else if (entries is null)
+{
+    <p class="muted">Loading…</p>
+}
+else if (entries.Count == 0)
+{
+    <div class="empty-state">
+        <h2>No changes logged yet</h2>
+        <p>Changes appear here after the first wallet scan.</p>
+    </div>
+}
+else
+{
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>When</th>
+                <th>Change</th>
+                <th>Asset</th>
+                <th>Wallet / exchange</th>
+                <th>Chain</th>
+                <th class="num">Previous</th>
+                <th class="num">New</th>
+                <th class="num">Difference</th>
+                <th>Reason</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var entry in entries)
+            {
+                var difference = (entry.NewQuantity ?? 0m) - (entry.PreviousQuantity ?? 0m);
+                <tr>
+                    <td>@Format.Timestamp(entry.OccurredAtUtc)</td>
+                    <td>@entry.ChangeType</td>
+                    <td>@entry.AssetName (@entry.AssetSymbol)</td>
+                    <td title="@entry.WalletAddress">@entry.WalletOrExchangeName</td>
+                    <td>@Format.ChainName(entry.Chain)</td>
+                    <td class="num">@(entry.PreviousQuantity is { } p ? Format.Quantity(p) : "–")</td>
+                    <td class="num">@(entry.NewQuantity is { } n ? Format.Quantity(n) : "–")</td>
+                    <td class="num @Format.DeltaClass(difference)">@(difference > 0 ? "+" : "")@Format.Quantity(difference)</td>
+                    <td>@entry.Reason</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private IReadOnlyList<PositionChangeLog>? entries;
+    private string? loadError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { entries = await HistoryService.GetRecentAsync(); }
+        catch (Exception ex) { loadError = $"Could not load the history: {ex.Message}"; }
+    }
+}

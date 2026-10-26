@@ -1,0 +1,36 @@
+@using CryptoPortfolioManager.Core.Models
+
+@* @key: a new scan result gets a fresh message, even when the previous one was dismissed. *@
+@if (Result.AlreadyRunning)
+{
+    <DismissibleMessage @key="Result" AutoHideSeconds="5">A wallet scan is already running.</DismissibleMessage>
+}
+else
+{
+    var c = Result.Changes;
+    <DismissibleMessage @key="Result" AutoHideSeconds="@(Result.Errors.Count == 0 ? 5 : null)">
+        Wallet scan finished: @Result.WalletsScanned @(Result.WalletsScanned == 1 ? "wallet" : "wallets") scanned,
+        @c.Added positions added, @c.Updated updated, @c.Removed removed.
+        @if (Result.WalletsSkipped > 0)
+        {
+            <span class="muted">@Result.WalletsSkipped CEX @(Result.WalletsSkipped == 1 ? "wallet" : "wallets") skipped.</span>
+        }
+        @if (Result.WalletsScanned == 0 && Result.WalletsSkipped == 0)
+        {
+            <span class="muted">No wallets yet: add them on the <a href="/wallets">Wallets</a> page.</span>
+        }
+        <span class="muted">Use "Update prices" to fetch prices for new assets.</span>
+    </DismissibleMessage>
+
+    @if (Result.Errors.Count > 0)
+    {
+        <DismissibleMessage @key="@((object)Result.Errors)" CssClass="alert sync-alert">
+            <strong>Some balances could not be read; their stored positions were left unchanged</strong>
+            <pre class="alert-detail">@string.Join(Environment.NewLine, Result.Errors)</pre>
+        </DismissibleMessage>
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public WalletScanResult Result { get; set; } = default!;
+}

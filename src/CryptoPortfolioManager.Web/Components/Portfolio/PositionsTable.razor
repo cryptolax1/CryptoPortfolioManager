@@ -1,0 +1,33 @@
+@using CryptoPortfolioManager.Core.Models
+
+<table class="positions">
+    <thead>
+        <tr>
+            <th scope="col">Wallet / exchange</th>
+            <th scope="col">Chain</th>
+            <th scope="col">Wallet address</th>
+            <th scope="col" class="num">Quantity</th>
+            <th scope="col" class="num">Value (USD)</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var p in Positions)
+        {
+            <tr @key="p.PositionId">
+                <td>@p.WalletOrExchangeName</td>
+                <td>@Format.ChainName(p.Chain)</td>
+                <td class="mono" title="@p.WalletAddress">@Format.ShortAddress(p.WalletAddress)</td>
+                <td class="num">@Format.Quantity(p.Quantity)</td>
+                <td class="num">@Format.Usd(p.ValueUsd)</td>
+            </tr>
+        }
+        @if (Positions.Count == 0)
+        {
+            <tr><td colspan="5" class="muted">No positions for this asset yet.</td></tr>
+        }
+    </tbody>
+</table>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<PositionLine> Positions { get; set; } = [];
+}

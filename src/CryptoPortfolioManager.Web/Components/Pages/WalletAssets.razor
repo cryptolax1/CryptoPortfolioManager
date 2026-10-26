@@ -1,0 +1,162 @@
+@using CryptoPortfolioManager.Core.Entities
+@using CryptoPortfolioManager.Core.Models
+@using CryptoPortfolioManager.Core.Services
+@using CryptoPortfolioManager.Web.Components.Portfolio
+@page "/wallet-assets"
+@inject IWalletService WalletService
+@inject IWalletScanService Scan
+@inject IPortfolioService Portfolio
+@rendermode InteractiveServer
+
+<PageTitle>Assets per wallet</PageTitle>
+
+<h1>Assets per wallet</h1>
+<p class="muted lead">The assets each wallet held at its last scan. Use <strong>Re-scan</strong> to read a single wallet again; other wallets are not touched.</p>
+
+@if (loadError is not null)
+{
+    <div class="alert">@loadError</div>
+}
+
+@if (scanResult is not null)
+{
+    <WalletScanResultView Result="scanResult" />
+}
+
+@if (wallets is null)
+{
+    <p class="muted">Loading…</p>
+}
+else if (wallets.Count == 0)
+{
+    <div class="empty-state">
+        <h2>No wallets yet</h2>
+        <p>Add a wallet on the <a href="/wallets">Wallets</a> page.</p>
+    </div>
+}
+else
+{
+    @foreach (var wallet in wallets)
+    {
+        var items = positions.Where(p => p.WalletId == wallet.Id).ToList();
+        <section class="form-card">
+            <h2>@wallet.Name <span class="pill pill-@wallet.Type.ToString().ToLowerInvariant()">@Format.WalletTypeLabel(wallet.Type)</span></h2>
+            <p class="muted">
+                <span class="mono" title="@wallet.Address">@wallet.Address</span> ·
+                @if (wallet.Type == WalletType.Cex)
+                {
+                    <span>not scanned on-chain</span>
+                }
+                else if (wallet.LastScanError is not null)
+                {
+                    <span class="delta-neg" title="@wallet.LastScanError">last scan failed</span>
+                    <span>(@(wallet.LastScannedAtUtc is { } ok ? "last ok " + Format.Timestamp(ok) : "never succeeded"))</span>
+                }
+                else
+                {
+                    <span>last scan: @(wallet.LastScannedAtUtc is { } t ? Format.Timestamp(t) : "never")</span>
+                }
+            </p>
+
+            @if (wallet.Type != WalletType.Cex)
+            {
+                <div class="form-actions">
+                    <button class="btn btn-secondary" disabled="@(scanningId is not null)" @onclick="() => ScanAsync(wallet.Id)">
+                        @(scanningId == wallet.Id ? "Scanning…" : "Re-scan")
+                    </button>
+                </div>
+            }
+
+            @if (items.Count == 0)
+            {
+                <p class="muted">No assets found.</p>
+            }
+            else
+            {
+                var total = items.Sum(p => (prices.GetValueOrDefault(p.AssetId) ?? 0m) * p.Quantity);
+                var unpriced = items.Count(p => prices.GetValueOrDefault(p.AssetId) is null);
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Asset</th>
+                            <th>Symbol</th>
+                            <th>Chain</th>
+                            <th class="num">Quantity</th>
+                            <th class="num">Price</th>
+                            <th class="num">Value</th>
+                            <th>Last read</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var p in items)
+                        {
+                            var price = prices.GetValueOrDefault(p.AssetId);
+                            <tr>
+                                <td class="name">@p.Asset?.Name</td>
+                                <td>@p.Asset?.Symbol</td>
+                                <td>@Format.ChainName(p.Chain)</td>
+                                <td class="num">@Format.Quantity(p.Quantity)</td>
+                                <td class="num">@Format.Usd(price)</td>
+                                <td class="num">@Format.Usd(price * p.Quantity)</td>
+                                <td>@(p.LastSyncedAtUtc is { } s ? Format.Timestamp(s) : "")</td>
+                            </tr>
+                        }
+                    </tbody>
+                    <tfoot>
+                        <tr>
+                            <th colspan="5">Total @wallet.Name</th>
+                            <th class="num">@Format.Usd(total)</th>
+                            <th class="muted">@(unpriced > 0 ? $"{unpriced} without price, not included" : "")</th>
+                        </tr>
+                    </tfoot>
+                </table>
+            }
+        </section>
+    }
+}
+
+@code {
+    private IReadOnlyList<Wallet>? wallets;
+    private IReadOnlyList<Position> positions = [];
+    private Dictionary<int, decimal?> prices = [];
+    private WalletScanResult? scanResult;
+    private string? loadError;
+    private int? scanningId;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            wallets = await WalletService.GetWalletsAsync();
+            positions = await WalletService.GetWalletPositionsAsync();
+            var overview = await Portfolio.GetPortfolioOverviewAsync();
+            prices = overview.Assets.ToDictionary(a => a.AssetId, a => a.PriceUsd);
+            loadError = null;
+        }
+        catch (Exception ex)
+        {
+            loadError = $"The wallets could not be loaded: {ex.Message}";
+        }
+    }
+
+    private async Task ScanAsync(int walletId)
+    {
+        scanningId = walletId;
+        scanResult = null;
+        try
+        {
+            scanResult = await Scan.ScanWalletAsync(walletId);
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            loadError = $"The wallet scan failed: {ex.Message}";
+        }
+        finally
+        {
+            scanningId = null;
+        }
+    }
+}

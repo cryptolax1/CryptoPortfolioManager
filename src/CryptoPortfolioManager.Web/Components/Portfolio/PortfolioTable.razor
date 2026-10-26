@@ -1,0 +1,54 @@
+@using CryptoPortfolioManager.Core.Models
+@using CryptoPortfolioManager.Core.Services
+
+<table class="portfolio">
+    <thead>
+        <tr>
+            <th class="chev-cell"></th>
+            <SortHeader Label="Name" Column="AssetSortColumn.Name" Current="sortColumn" Descending="descending" OnSort="Sort" />
+            <SortHeader Label="Symbol" Column="AssetSortColumn.Symbol" Current="sortColumn" Descending="descending" OnSort="Sort" />
+            <SortHeader Label="Quantity" Column="AssetSortColumn.Quantity" Current="sortColumn" Descending="descending" OnSort="Sort" Numeric="true" />
+            <SortHeader Label="Price (USD)" Column="AssetSortColumn.Price" Current="sortColumn" Descending="descending" OnSort="Sort" Numeric="true" />
+            <SortHeader Label="Value (USD)" Column="AssetSortColumn.Value" Current="sortColumn" Descending="descending" OnSort="Sort" Numeric="true" />
+            <SortHeader Label="YTD" Column="AssetSortColumn.DeltaYtd" Current="sortColumn" Descending="descending" OnSort="Sort" Numeric="true" />
+            <SortHeader Label="3M" Column="AssetSortColumn.Delta3M" Current="sortColumn" Descending="descending" OnSort="Sort" Numeric="true" />
+            <SortHeader Label="1M" Column="AssetSortColumn.Delta1M" Current="sortColumn" Descending="descending" OnSort="Sort" Numeric="true" />
+            <SortHeader Label="1W" Column="AssetSortColumn.Delta1W" Current="sortColumn" Descending="descending" OnSort="Sort" Numeric="true" />
+            <SortHeader Label="1D" Column="AssetSortColumn.Delta1D" Current="sortColumn" Descending="descending" OnSort="Sort" Numeric="true" />
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var asset in sorted)
+        {
+            <AssetRow @key="asset.AssetId" Asset="asset" />
+        }
+    </tbody>
+</table>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<AssetOverview> Items { get; set; } = [];
+
+    private AssetSortColumn sortColumn = AssetSortColumn.Value;
+    private bool descending = true;
+    private IReadOnlyList<AssetOverview> sorted = [];
+
+    protected override void OnParametersSet() => Resort();
+
+    private void Sort(AssetSortColumn column)
+    {
+        if (column == sortColumn)
+        {
+            descending = !descending;
+        }
+        else
+        {
+            sortColumn = column;
+            // Text sorts A-Z first; numbers highest first.
+            descending = column is not (AssetSortColumn.Name or AssetSortColumn.Symbol);
+        }
+
+        Resort();
+    }
+
+    private void Resort() => sorted = AssetSorter.Sort(Items, sortColumn, descending);
+}

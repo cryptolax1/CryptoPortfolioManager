@@ -1,0 +1,84 @@
+@page "/"
+@using CryptoPortfolioManager.Core.Models
+@using CryptoPortfolioManager.Core.Services
+@using CryptoPortfolioManager.Web.Components.Portfolio
+@inject IPortfolioService PortfolioService
+@inject DatabaseInfo Database
+@rendermode InteractiveServer
+
+<PageTitle>Portfolio</PageTitle>
+
+<h1>Portfolio @if (Database.IsTest) { <span class="db-badge" title="Prices and positions come from the test database">TEST DATABASE</span> }</h1>
+
+@if (error is not null)
+{
+    <div class="alert">@error</div>
+}
+else if (portfolio is null)
+{
+    <p class="muted">Loading…</p>
+}
+else
+{
+    <PriceSyncPanel OnSynced="ReloadAsync">
+        <Actions>
+            <ExportCsvButton Disabled="@(portfolio.Assets.Count == 0)" />
+            <ScanWalletsButton OnScanned="ScannedAsync" OnFailed="ScanFailed" />
+        </Actions>
+    </PriceSyncPanel>
+
+    @if (scanFailure is not null)
+    {
+        <DismissibleMessage @key="scanFailure" CssClass="alert sync-alert">@scanFailure</DismissibleMessage>
+    }
+    @if (scanResult is not null)
+    {
+        <WalletScanResultView Result="scanResult" />
+    }
+
+    @if (portfolio.Assets.Count == 0)
+    {
+        <PortfolioEmptyState />
+    }
+    else
+    {
+        <PortfolioSummary Portfolio="portfolio" />
+        <PortfolioTable Items="portfolio.Assets" />
+        <p class="footnote">Changes (YTD, 3M, 1M, 1W, 1D) are only shown when stored price history covers the period.</p>
+    }
+}
+
+@code {
+    private PortfolioOverview? portfolio;
+    private string? error;
+    private WalletScanResult? scanResult;
+    private string? scanFailure;
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ScannedAsync(WalletScanResult result)
+    {
+        scanResult = result;
+        scanFailure = null;
+        await ReloadAsync();
+    }
+
+    private void ScanFailed(string message)
+    {
+        scanResult = null;
+        scanFailure = message;
+    }
+
+    private async Task ReloadAsync()
+    {
+        try
+        {
+            portfolio = await PortfolioService.GetPortfolioOverviewAsync();
+            error = null;
+        }
+        catch (Exception ex)
+        {
+            error = $"The portfolio could not be loaded: {ex.Message}";
+        }
+    }
+}

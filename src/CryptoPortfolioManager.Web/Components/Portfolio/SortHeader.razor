@@ -1,0 +1,20 @@
+@using CryptoPortfolioManager.Core.Services
+
+<th scope="col" class="@(Numeric ? "num" : null)" aria-sort="@AriaSort">
+    <button type="button" class="sort-btn" @onclick="() => OnSort.InvokeAsync(Column)">
+        @Label<span class="sort-ind" aria-hidden="true">@Indicator</span>
+    </button>
+</th>
+
+@code {
+    [Parameter, EditorRequired] public string Label { get; set; } = "";
+    [Parameter, EditorRequired] public AssetSortColumn Column { get; set; }
+    [Parameter, EditorRequired] public AssetSortColumn Current { get; set; }
+    [Parameter] public bool Descending { get; set; }
+    [Parameter] public bool Numeric { get; set; }
+    [Parameter] public EventCallback<AssetSortColumn> OnSort { get; set; }
+
+    private bool Active => Current == Column;
+    private string AriaSort => !Active ? "none" : Descending ? "descending" : "ascending";
+    private string Indicator => !Active ? "" : Descending ? " ▼" : " ▲";
+}

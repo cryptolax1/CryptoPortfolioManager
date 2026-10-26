@@ -1,0 +1,37 @@
+@using CryptoPortfolioManager.Core.Models
+@using CryptoPortfolioManager.Core.Services
+@inject IWalletScanService Scan
+
+<button class="btn btn-secondary" disabled="@(running || Disabled)" @onclick="RunAsync"
+        title="Read the whitelisted tokens in your wallets and update the positions">
+    @(running ? "Scanning wallets…" : "Re-scan wallets")
+</button>
+
+@code {
+    private bool running;
+
+    [Parameter] public bool Disabled { get; set; }
+
+    /// <summary>Raised with the outcome (also on failure), so the page can show it and reload.</summary>
+    [Parameter] public EventCallback<WalletScanResult> OnScanned { get; set; }
+
+    [Parameter] public EventCallback<string> OnFailed { get; set; }
+
+    private async Task RunAsync()
+    {
+        running = true;
+        try
+        {
+            var result = await Scan.ScanAsync();
+            await OnScanned.InvokeAsync(result);
+        }
+        catch (Exception ex)
+        {
+            await OnFailed.InvokeAsync($"The wallet scan failed: {ex.Message}");
+        }
+        finally
+        {
+            running = false;
+        }
+    }
+}

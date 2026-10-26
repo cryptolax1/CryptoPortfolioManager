@@ -1,0 +1,33 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build",
+            "type": "process",
+            "command": "dotnet",
+            "args": ["build", "${workspaceFolder}/src/CryptoPortfolioManager.Web/CryptoPortfolioManager.Web.csproj"],
+            "problemMatcher": "$msCompile",
+            "group": { "kind": "build", "isDefault": true }
+        },
+        {
+            "label": "ensure test database",
+            "type": "process",
+            "command": "dotnet",
+            "args": ["run", "--project", "${workspaceFolder}/tools/CryptoPortfolioManager.TestDb"],
+            "problemMatcher": "$msCompile"
+        },
+        {
+            "label": "reset test database",
+            "type": "process",
+            "command": "dotnet",
+            "args": ["run", "--project", "${workspaceFolder}/tools/CryptoPortfolioManager.TestDb", "--", "--reset"],
+            "problemMatcher": "$msCompile"
+        },
+        {
+            "label": "build + ensure test database",
+            "dependsOrder": "sequence",
+            "dependsOn": ["build", "ensure test database"],
+            "problemMatcher": []
+        }
+    ]
+}

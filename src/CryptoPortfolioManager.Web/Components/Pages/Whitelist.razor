@@ -1,0 +1,233 @@
+@using CryptoPortfolioManager.Core.Entities
+@using CryptoPortfolioManager.Core.Models
+@using CryptoPortfolioManager.Core.Services
+@using CryptoPortfolioManager.Web.Components.Portfolio
+@page "/whitelist"
+@inject IWhitelistService WhitelistService
+@rendermode InteractiveServer
+
+<PageTitle>Whitelist</PageTitle>
+
+<h1>Whitelisted tokens</h1>
+<p class="muted lead">The wallet scan only picks up these tokens. Leave the token address empty for the native coin of a chain (CRO on Cronos, BNB on BNB Smart Chain, XRP on the XRP Ledger, SOL on Solana). On Solana the token address is the mint; on the XRP Ledger an issued token is written as CURRENCY.issuer. For XRP Ledger issued tokens the decimals are not used; for Solana tokens they are read from the chain. The identifier (CoinGecko ID) links the token to an asset and its prices; tokens with the same identifier on different chains share one asset.</p>
+
+@if (loadError is not null)
+{
+    <div class="alert">@loadError</div>
+}
+
+<form class="form-card" @onsubmit="SaveAsync" @onsubmit:preventDefault>
+    <h2>@(editingId is null ? "Add token" : "Edit token")</h2>
+    <div class="form-grid">
+        <label>Token name
+            <input @bind="name" maxlength="100" placeholder="USD Coin" />
+        </label>
+        <label>Token symbol
+            <input @bind="symbol" maxlength="20" placeholder="USDC" />
+        </label>
+        <label>Blockchain
+            <select @bind="chain">
+                @foreach (var c in supportedChains)
+                {
+                    <option value="@c">@Format.ChainLabel(c)</option>
+                }
+            </select>
+        </label>
+        <label>Decimals
+            <input type="number" min="0" max="36" @bind="decimals" />
+        </label>
+        <label class="wide">Token address <span class="muted">(empty = native coin; @BlockchainAddress.TokenAddressHint(chain))</span>
+            <input class="mono" @bind="contractAddress" maxlength="100" placeholder="@AddressPlaceholder" spellcheck="false" />
+        </label>
+        <label>Identifier (CoinGecko ID)
+            <input @bind="coinGeckoId" maxlength="100" placeholder="usd-coin" spellcheck="false" />
+        </label>
+    </div>
+    @if (formError is not null)
+    {
+        <div class="alert form-alert">@formError</div>
+    }
+    <div class="form-actions">
+        <button class="btn" type="submit" disabled="@busy">@(editingId is null ? "Add token" : "Save changes")</button>
+        @if (editingId is not null)
+        {
+            <button class="btn btn-secondary" type="button" @onclick="CancelEdit">Cancel</button>
+        }
+    </div>
+</form>
+
+@if (tokens is null)
+{
+    <p class="muted">Loading…</p>
+}
+else if (tokens.Count == 0)
+{
+    <div class="empty-state">
+        <div class="empty-icon" aria-hidden="true">◌</div>
+        <h2>No tokens whitelisted</h2>
+        <p>Without whitelisted tokens a wallet scan finds nothing. Add a token above.</p>
+    </div>
+}
+else
+{
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Token name</th>
+                <th>Symbol</th>
+                <th>Blockchain</th>
+                <th>Token address</th>
+                <th class="num">Decimals</th>
+                <th>Identifier</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var token in tokens)
+            {
+                <tr>
+                    <td class="name">@token.Name</td>
+                    <td class="symbol">@token.Symbol</td>
+                    <td>@Format.ChainLabel(token.Chain)</td>
+                    <td class="mono addr" title="@token.ContractAddress">@(token.ContractAddress ?? "native coin")</td>
+                    <td class="num">@token.Decimals</td>
+                    <td class="mono">@token.Asset?.CoinGeckoId</td>
+                    <td class="row-actions">
+                        @if (confirmDeleteId == token.Id)
+                        {
+                            <span class="muted">Also removes the positions read for this token.</span>
+                            <button class="btn btn-small btn-danger" @onclick="() => DeleteAsync(token.Id)">Delete</button>
+                            <button class="btn btn-small btn-secondary" @onclick="() => confirmDeleteId = null">Cancel</button>
+                        }
+                        else
+                        {
+                            <button class="btn btn-small btn-secondary" @onclick="() => Edit(token)">Edit</button>
+                            <button class="btn btn-small btn-secondary" @onclick="() => confirmDeleteId = token.Id">Delete</button>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    // Chains that have a node configured; the service rejects the rest with a clear message.
+    private string AddressPlaceholder => ChainInfo.FamilyOf(chain) switch
+    {
+        ChainFamily.Solana => "mint address",
+        ChainFamily.XrpLedger => "USD.rXXXX…",
+        ChainFamily.Sui => "0xPACKAGE::module::NAME",
+        ChainFamily.Cardano => "policyId.assetNameHex",
+        ChainFamily.Stellar => "USDC:GXXXX…",
+        ChainFamily.Bitcoin => "native coin only",
+        _ => "0x…"
+    };
+    private static readonly Chain[] supportedChains = 
+    [
+        Chain.Cronos,
+        Chain.BnbSmartChain,
+        Chain.Ethereum,
+        Chain.Polygon,
+        Chain.Arbitrum,
+        Chain.Optimism,
+        Chain.Base,
+        Chain.Avalanche,
+        Chain.Scroll,
+        Chain.XrpLedger,
+        Chain.Solana,
+        Chain.Bitcoin,
+        Chain.Sui,
+        Chain.Cardano,
+        Chain.Stellar
+    ];
+
+    private IReadOnlyList<WhitelistedToken>? tokens;
+    private string? loadError;
+    private string? formError;
+    private bool busy;
+    private int? editingId;
+    private int? confirmDeleteId;
+
+    private string name = "";
+    private string symbol = "";
+    private Chain chain = Chain.Cronos;
+    private int decimals = 18;
+    private string contractAddress = "";
+    private string coinGeckoId = "";
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            tokens = await WhitelistService.GetAsync();
+            loadError = null;
+        }
+        catch (Exception ex)
+        {
+            loadError = $"The whitelist could not be loaded: {ex.Message}";
+        }
+    }
+
+    private void Edit(WhitelistedToken token)
+    {
+        editingId = token.Id;
+        name = token.Name;
+        symbol = token.Symbol;
+        chain = token.Chain;
+        decimals = token.Decimals;
+        contractAddress = token.ContractAddress ?? "";
+        coinGeckoId = token.Asset?.CoinGeckoId ?? "";
+        formError = null;
+    }
+
+    private void CancelEdit()
+    {
+        editingId = null;
+        name = symbol = contractAddress = coinGeckoId = "";
+        chain = Chain.Cronos;
+        decimals = 18;
+        formError = null;
+    }
+
+    private async Task SaveAsync()
+    {
+        busy = true;
+        try
+        {
+            var input = new WhitelistedTokenInput(name, symbol, chain, contractAddress, decimals, coinGeckoId);
+            var result = editingId is { } id ? await WhitelistService.UpdateAsync(id, input) : await WhitelistService.AddAsync(input);
+            formError = result.Error;
+            if (result.Ok)
+            {
+                CancelEdit();
+                await LoadAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            formError = $"Saving failed: {ex.Message}";
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task DeleteAsync(int id)
+    {
+        confirmDeleteId = null;
+        try
+        {
+            await WhitelistService.DeleteAsync(id);
+            if (editingId == id) CancelEdit();
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            loadError = $"Deleting failed: {ex.Message}";
+        }
+    }
+}
