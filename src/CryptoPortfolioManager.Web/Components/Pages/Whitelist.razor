@@ -122,25 +122,28 @@ else
         ChainFamily.Stellar => "USDC:GXXXX…",
         ChainFamily.Bitcoin => "native coin only",
         _ => "0x…"
-    };
-    private static readonly Chain[] supportedChains = 
-    [
-        Chain.Cronos,
-        Chain.BnbSmartChain,
-        Chain.Ethereum,
-        Chain.Polygon,
+        };
+
+        // Sorted alphabetically by the label the user sees (e.g. "BNB Smart Chain", "XRP Ledger").
+    private static readonly IReadOnlyList<Chain> supportedChains =
+    new Chain[]
+    {
         Chain.Arbitrum,
-        Chain.Optimism,
-        Chain.Base,
         Chain.Avalanche,
-        Chain.Scroll,
-        Chain.XrpLedger,
-        Chain.Solana,
+        Chain.Base,
+        Chain.BnbSmartChain,
         Chain.Bitcoin,
-        Chain.Sui,
         Chain.Cardano,
-        Chain.Stellar
-    ];
+        Chain.Cronos,
+        Chain.Ethereum,
+        Chain.Optimism,
+        Chain.Polygon,
+        Chain.Scroll,
+        Chain.Solana,
+        Chain.Stellar,
+        Chain.Sui,
+        Chain.XrpLedger
+    }.OrderBy(Format.ChainLabel, StringComparer.OrdinalIgnoreCase).ToList();
 
     private IReadOnlyList<WhitelistedToken>? tokens;
     private string? loadError;
@@ -151,7 +154,7 @@ else
 
     private string name = "";
     private string symbol = "";
-    private Chain chain = Chain.Cronos;
+    private Chain chain = Chain.Ethereum;
     private int decimals = 18;
     private string contractAddress = "";
     private string coinGeckoId = "";
@@ -187,7 +190,7 @@ else
     {
         editingId = null;
         name = symbol = contractAddress = coinGeckoId = "";
-        chain = Chain.Cronos;
+                chain = Chain.Ethereum;
         decimals = 18;
         formError = null;
     }
