@@ -233,7 +233,7 @@ public class NonEvmChainTests
             new CardanoBalanceReader(new HttpClient(sol), Opts()),
             new StellarBalanceReader(new HttpClient(sol), Opts()));
 
-        Assert.All([Chain.Scroll, Chain.XrpLedger, Chain.Solana, Chain.Ethereum, Chain.Bitcoin], c => Assert.True(reader.Supports(c)));
+        Assert.All([Chain.Scroll, Chain.Flare, Chain.XrpLedger, Chain.Solana, Chain.Ethereum, Chain.Bitcoin], c => Assert.True(reader.Supports(c)));
 
         Assert.Equal(1m, await reader.GetBalanceAsync(Chain.Scroll, EvmWallet, null, 18, Ct));
         Assert.Equal("https://rpc.scroll.io/", Assert.Single(evm.Requests).Uri.ToString());

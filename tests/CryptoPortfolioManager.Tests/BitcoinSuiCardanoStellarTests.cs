@@ -172,10 +172,39 @@ public class BitcoinSuiCardanoStellarTests
     [Fact]
     public async Task Sui_GraphQlErrors_AreReported()
     {
-        var reader = new SuiBalanceReader(new HttpClient(new StubHandler(_ => Json("""{"errors":[{"message":"boom"}]}"""))), Opts());
+                        var reader = new SuiBalanceReader(new HttpClient(new StubHandler(_ => Json("""{"errors":[{"message":"boom"}]}"""))), Opts());
 
         var ex = await Assert.ThrowsAsync<WalletBalanceException>(() => reader.GetBalanceAsync(Chain.Sui, SuiWallet, null, 9, Ct));
         Assert.Contains("boom", ex.Message);
+    }
+
+    [Fact]
+    public async Task Sui_PostBuffersBodyWithContentLength_NotChunkedTransfer()
+    {
+        // The Sui GraphQL gateway answers HTTP 400 ("Header of type content-length was missing") to a chunked POST
+        // without Content-Length. PostAsJsonAsync on a JsonObject streams chunked content, so the transport must
+        // buffer the body instead.
+        HttpRequestMessage? seen = null;
+        var handler = new InspectingHandler(request =>
+        {
+            seen = request;
+            return Json("""{"data":{"address":{"balance":{"totalBalance":"1000000000"}}}}""");
+        });
+        var reader = new SuiBalanceReader(new HttpClient(handler), Opts());
+
+                Assert.Equal(1m, await reader.GetBalanceAsync(Chain.Sui, SuiWallet, null, 9, Ct));
+
+        Assert.NotNull(seen);
+        Assert.True(seen!.Headers.TransferEncodingChunked != true, "the request must not be sent with chunked transfer encoding");
+        Assert.NotNull(seen.Content!.Headers.ContentLength);
+        Assert.True(seen.Content.Headers.ContentLength > 0, "the request body must carry a Content-Length");
+        Assert.Equal("application/json", seen.Content.Headers.ContentType!.MediaType);
+    }
+
+    private sealed class InspectingHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+            Task.FromResult(respond(request));
     }
 
     // ---- Cardano ----

@@ -1,5 +1,7 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CryptoPortfolioManager.Core.Abstractions;
@@ -18,15 +20,28 @@ internal sealed class JsonRpcTransport(HttpClient http, BlockchainRpcOptions opt
     /// </param>
     public async Task<JsonObject> PostAsync(Uri endpoint, JsonObject request, Func<JsonObject, string?> rateLimitMessage, CancellationToken ct)
     {
-        var body = await SendAsync(() => http.PostAsJsonAsync(endpoint, request, ct),
+        var body = await SendAsync(() => PostJsonAsync(endpoint, request, ct),
             b => b is JsonObject o ? rateLimitMessage(o) : null, notFoundIsEmpty: false, ct);
         return body as JsonObject ?? throw new WalletBalanceException("The node returned an unexpected response.");
     }
 
     /// <summary>POSTs and returns the JSON body as is (a REST API may answer with an array).</summary>
     public async Task<JsonNode> PostForNodeAsync(Uri endpoint, JsonObject request, CancellationToken ct) =>
-        await SendAsync(() => http.PostAsJsonAsync(endpoint, request, ct), _ => null, notFoundIsEmpty: false, ct)
+        await SendAsync(() => PostJsonAsync(endpoint, request, ct), _ => null, notFoundIsEmpty: false, ct)
         ?? throw new WalletBalanceException("The node returned an empty response.");
+
+    /// <summary>
+    /// POSTs a <see cref="JsonObject"/> with the body buffered so a <c>Content-Length</c> header is always sent. Some
+    /// nodes (notably the Sui GraphQL gateway) reject a chunked request without <c>Content-Length</c> with HTTP 400,
+    /// which <see cref="HttpClientJsonExtensions.PostAsJsonAsync(HttpClient, string, object?, CancellationToken)"/>
+    /// would produce because a <see cref="JsonNode"/> is streamed as chunked content.
+    /// </summary>
+    private Task<HttpResponseMessage> PostJsonAsync(Uri endpoint, JsonObject request, CancellationToken ct)
+    {
+        var content = new ByteArrayContent(Encoding.UTF8.GetBytes(request.ToJsonString()));
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+        return http.PostAsync(endpoint, content, ct);
+    }
 
     /// <summary>GETs a REST resource. Returns null for HTTP 404 when <paramref name="notFoundIsEmpty"/> is set (an unknown account is a valid, empty answer).</summary>
     public Task<JsonNode?> GetAsync(Uri endpoint, bool notFoundIsEmpty, CancellationToken ct) =>

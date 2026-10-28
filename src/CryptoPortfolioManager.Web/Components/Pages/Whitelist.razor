@@ -71,19 +71,27 @@ else if (tokens.Count == 0)
 else
 {
     <table class="data-table">
-        <thead>
+                <thead>
             <tr>
-                <th>Token name</th>
-                <th>Symbol</th>
-                <th>Blockchain</th>
+                <th scope="col" aria-sort="@AriaSort(WhitelistSortColumn.Name)">
+                    <button type="button" class="sort-btn" @onclick="() => Sort(WhitelistSortColumn.Name)">Token name<span class="sort-ind" aria-hidden="true">@Indicator(WhitelistSortColumn.Name)</span></button>
+                </th>
+                <th scope="col" aria-sort="@AriaSort(WhitelistSortColumn.Symbol)">
+                    <button type="button" class="sort-btn" @onclick="() => Sort(WhitelistSortColumn.Symbol)">Symbol<span class="sort-ind" aria-hidden="true">@Indicator(WhitelistSortColumn.Symbol)</span></button>
+                </th>
+                <th scope="col" aria-sort="@AriaSort(WhitelistSortColumn.Chain)">
+                    <button type="button" class="sort-btn" @onclick="() => Sort(WhitelistSortColumn.Chain)">Blockchain<span class="sort-ind" aria-hidden="true">@Indicator(WhitelistSortColumn.Chain)</span></button>
+                </th>
                 <th>Token address</th>
-                <th class="num">Decimals</th>
+                <th class="num" scope="col" aria-sort="@AriaSort(WhitelistSortColumn.Decimals)">
+                    <button type="button" class="sort-btn" @onclick="() => Sort(WhitelistSortColumn.Decimals)">Decimals<span class="sort-ind" aria-hidden="true">@Indicator(WhitelistSortColumn.Decimals)</span></button>
+                </th>
                 <th>Identifier</th>
                 <th></th>
             </tr>
         </thead>
         <tbody>
-            @foreach (var token in tokens)
+            @foreach (var token in SortedTokens)
             {
                 <tr>
                     <td class="name">@token.Name</td>
@@ -136,6 +144,7 @@ else
         Chain.Cardano,
         Chain.Cronos,
         Chain.Ethereum,
+        Chain.Flare,
         Chain.Optimism,
         Chain.Polygon,
         Chain.Scroll,
@@ -145,12 +154,61 @@ else
         Chain.XrpLedger
     }.OrderBy(Format.ChainLabel, StringComparer.OrdinalIgnoreCase).ToList();
 
-    private IReadOnlyList<WhitelistedToken>? tokens;
+        private IReadOnlyList<WhitelistedToken>? tokens;
     private string? loadError;
     private string? formError;
     private bool busy;
     private int? editingId;
     private int? confirmDeleteId;
+
+    private WhitelistSortColumn sortColumn = WhitelistSortColumn.Name;
+    private bool descending;
+
+    private enum WhitelistSortColumn { Name, Symbol, Chain, Decimals }
+
+    // Tokens ordered by the current sort column; the table renders this.
+    private IReadOnlyList<WhitelistedToken> SortedTokens =>
+        tokens is null ? [] : SortCore(tokens);
+
+    private IReadOnlyList<WhitelistedToken> SortCore(IEnumerable<WhitelistedToken> items)
+    {
+        IOrderedEnumerable<WhitelistedToken> ordered = sortColumn switch
+        {
+            WhitelistSortColumn.Symbol => Order(items, t => t.Symbol, descending),
+            WhitelistSortColumn.Chain => Order(items, t => Format.ChainLabel(t.Chain), descending),
+            WhitelistSortColumn.Decimals => descending
+                ? items.OrderByDescending(t => t.Decimals)
+                : items.OrderBy(t => t.Decimals),
+            _ => Order(items, t => t.Name, descending)
+        };
+        return ordered.ToList();
+    }
+
+    private static IOrderedEnumerable<WhitelistedToken> Order(
+        IEnumerable<WhitelistedToken> items, Func<WhitelistedToken, string?> key, bool descending) =>
+        descending
+            ? items.OrderByDescending(key, StringComparer.OrdinalIgnoreCase)
+            : items.OrderBy(key, StringComparer.OrdinalIgnoreCase);
+
+    private void Sort(WhitelistSortColumn column)
+    {
+        if (column == sortColumn)
+        {
+            descending = !descending;
+        }
+        else
+        {
+            sortColumn = column;
+            // Text sorts A-Z first; numbers highest first, like the portfolio table.
+            descending = column == WhitelistSortColumn.Decimals;
+        }
+    }
+
+    private string AriaSort(WhitelistSortColumn column) =>
+        column != sortColumn ? "none" : descending ? "descending" : "ascending";
+
+    private string Indicator(WhitelistSortColumn column) =>
+        column != sortColumn ? "" : descending ? " ▼" : " ▲";
 
     private string name = "";
     private string symbol = "";

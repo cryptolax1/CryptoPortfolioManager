@@ -21,6 +21,7 @@ public sealed class BlockchainRpcOptions
         ["Base"] = "https://mainnet.base.org",
         ["Avalanche"] = "https://api.avax.network/ext/bc/C/rpc",
         ["Scroll"] = "https://rpc.scroll.io",
+        ["Flare"] = "https://flare-api.flare.network/ext/C/rpc",
         ["XrpLedger"] = "https://xrplcluster.com",
         ["Solana"] = "https://api.mainnet-beta.solana.com",
         ["Bitcoin"] = "https://mempool.space/api",

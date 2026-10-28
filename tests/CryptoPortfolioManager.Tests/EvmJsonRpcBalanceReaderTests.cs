@@ -68,7 +68,7 @@ public class EvmJsonRpcBalanceReaderTests
             call["params"]![0]!["data"]!.GetValue<string>());
     }
 
-    [Fact]
+        [Fact]
     public async Task BnbSmartChain_UsesItsOwnEndpoint()
     {
         var (reader, handler) = Create(new StubHandler(_ => Result("0x0")));
@@ -77,6 +77,26 @@ public class EvmJsonRpcBalanceReaderTests
 
         Assert.Equal(0m, balance);
         Assert.Equal("bsc-dataseed.binance.org", handler.Requests.Single().Uri.Host);
+    }
+
+        [Fact]
+    public async Task Flare_ReadsNativeFlrAndErc20OverItsOwnEndpoint()
+    {
+        var (reader, handler) = Create(new StubHandler(
+            _ => Result(Hex(BigInteger.Parse("2500000000000000000"))), // 2.5 FLR (18 decimals)
+            _ => Result(Hex(12_345_678))));                            // 12.345678 of a 6-decimal token
+
+        Assert.True(reader.Supports(Chain.Flare));
+
+        var native = await reader.GetBalanceAsync(Chain.Flare, Wallet, null, 18, TestContext.Current.CancellationToken);
+        Assert.Equal(2.5m, native);
+        Assert.Equal("https://flare-api.flare.network/ext/C/rpc", handler.Requests[0].Uri.ToString());
+        Assert.Equal("eth_getBalance", handler.Requests[0].Body["method"]!.GetValue<string>());
+
+        var token = await reader.GetBalanceAsync(Chain.Flare, Wallet, Usdc, 6, TestContext.Current.CancellationToken);
+        Assert.Equal(12.345678m, token);
+        Assert.Equal("eth_call", handler.Requests[1].Body["method"]!.GetValue<string>());
+        Assert.Equal(Usdc, handler.Requests[1].Body["params"]![0]!["to"]!.GetValue<string>());
     }
 
     [Fact]

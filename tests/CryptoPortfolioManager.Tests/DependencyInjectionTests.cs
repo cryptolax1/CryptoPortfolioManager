@@ -37,14 +37,35 @@ public class DependencyInjectionTests
         Assert.IsType<WalletScanService>(scope.ServiceProvider.GetRequiredService<IWalletScanService>());
         Assert.IsType<WalletService>(scope.ServiceProvider.GetRequiredService<IWalletService>());
         Assert.IsType<WhitelistService>(scope.ServiceProvider.GetRequiredService<IWhitelistService>());
-        var reader = Assert.IsType<MultiChainBalanceReader>(scope.ServiceProvider.GetRequiredService<IWalletBalanceReader>());
-        Assert.All([Chain.Scroll, Chain.XrpLedger, Chain.Solana, Chain.Avalanche, Chain.Bitcoin, Chain.Sui, Chain.Cardano, Chain.Stellar], c => Assert.True(reader.Supports(c)));
+                var reader = Assert.IsType<MultiChainBalanceReader>(scope.ServiceProvider.GetRequiredService<IWalletBalanceReader>());
+        Assert.All([Chain.Scroll, Chain.Flare, Chain.XrpLedger, Chain.Solana, Chain.Avalanche, Chain.Bitcoin, Chain.Sui, Chain.Cardano, Chain.Stellar], c => Assert.True(reader.Supports(c)));
         Assert.IsType<CoinGeckoClient>(scope.ServiceProvider.GetRequiredService<IPriceProvider>());
 
-        var options = scope.ServiceProvider.GetRequiredService<IOptions<CoinGeckoOptions>>().Value;
+                var options = scope.ServiceProvider.GetRequiredService<IOptions<CoinGeckoOptions>>().Value;
         Assert.Equal("secret-from-config", options.ApiKey);
         Assert.Equal(TimeSpan.FromSeconds(1), options.MinRequestInterval);
         Assert.Equal(12, options.TimeoutSeconds);
+    }
+
+    [Fact]
+    public void FlareRpc_StaysConfigured_WhenConfigOnlyOverridesSomeChains()
+    {
+        // appsettings.json lists the chains it knows; Flare is not in it. Binding a partial RpcUrls section must not
+        // drop the built-in defaults, so a chain added to the enum keeps working without touching appsettings.
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Blockchain:RpcUrls:Ethereum"] = "https://my-private-node.example/eth"
+        }).Build();
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddBlockchainBalanceReaders(config);
+
+        using var provider = services.BuildServiceProvider();
+        var options = provider.GetRequiredService<IOptions<BlockchainRpcOptions>>().Value;
+
+        Assert.Equal("https://my-private-node.example/eth", options.RpcUrls["Ethereum"]); // config wins
+        Assert.Equal("https://flare-api.flare.network/ext/C/rpc", options.RpcUrls["Flare"]); // default kept
     }
 
     [Fact]

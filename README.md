@@ -108,7 +108,7 @@ De knop **Re-scan wallets** (naast *Update prices*) werkt de posities bij op bas
 
   | Familie | Chains | Methoden | Adres van het token |
   |---|---|---|---|
-  | EVM | Cronos, BNB Smart Chain, Ethereum, Polygon, Arbitrum, Optimism, Base, Avalanche, Scroll | `eth_getBalance` (native), `eth_call` met ERC-20 `balanceOf` | `0x…` contractadres |
+  | EVM | Cronos, BNB Smart Chain, Ethereum, Polygon, Arbitrum, Optimism, Base, Avalanche, Scroll, Flare | `eth_getBalance` (native), `eth_call` met ERC-20 `balanceOf` | `0x…` contractadres |
   | XRP Ledger | `XrpLedger` (`xrplcluster.com`) | `account_info` (XRP), `account_lines` gefilterd op de issuer (issued tokens) | `CURRENCY.issuer`, bijv. `USD.rvYAf…`; decimals worden niet gebruikt |
   | Solana | `Solana` (`api.mainnet-beta.solana.com`) | `getBalance` (SOL), `getTokenAccountsByOwner` gefilterd op de mint (alle token accounts opgeteld, SPL en Token-2022) | mint-adres; decimals komen van de chain |
   | Bitcoin (SegWit) | `Bitcoin` (`mempool.space/api`, Esplora) | `GET /address/{adres}`: bevestigd ontvangen min uitgegeven | geen: alleen BTC (laat leeg) |
