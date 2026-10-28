@@ -13,7 +13,7 @@ else
         @c.Added positions added, @c.Updated updated, @c.Removed removed.
         @if (Result.WalletsSkipped > 0)
         {
-            <span class="muted">@Result.WalletsSkipped CEX @(Result.WalletsSkipped == 1 ? "wallet" : "wallets") skipped.</span>
+            <span class="muted">@Result.WalletsSkipped @(Result.WalletsSkipped == 1 ? "wallet" : "wallets") skipped (no on-chain address).</span>
         }
         @if (Result.WalletsScanned == 0 && Result.WalletsSkipped == 0)
         {

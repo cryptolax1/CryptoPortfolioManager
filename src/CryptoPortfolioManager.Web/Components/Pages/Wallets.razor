@@ -22,19 +22,35 @@
         <label>Name
             <input @bind="name" maxlength="100" placeholder="Cronos Main" />
         </label>
-        <label>Wallet type
-            <select @bind="type">
-                @foreach (var t in Enum.GetValues<WalletType>())
-                {
-                    <option value="@t">@Format.WalletTypeLabel(t)</option>
-                }
-            </select>
+                <label>Wallet type
+            @if (editingId is null)
+            {
+                                <select @bind="type" @bind:after="OnTypeChanged">
+                    @foreach (var t in Enum.GetValues<WalletType>())
+                    {
+                        <option value="@t">@Format.WalletTypeLabel(t)</option>
+                    }
+                </select>
+            }
+            else
+            {
+                @* Chosen once, when the wallet is added; the service ignores a different type on edit. *@
+                <input value="@Format.WalletTypeLabel(type)" disabled title="The wallet type cannot be changed. Add a new wallet instead." />
+            }
         </label>
         <label>Source
             <input @bind="source" maxlength="100" placeholder="Metamask" />
         </label>
-        <label class="wide">Wallet address
-            <input class="mono" @bind="address" maxlength="120" placeholder="0x… / bc1… / 3… / r… / addr1… / G… / Solana" spellcheck="false" />
+                <label class="wide">Wallet address
+            @if (type == WalletType.Cex)
+            {
+                @* A CEX has no address: its balances come from the exchange's API, not from the blockchain. *@
+                <input class="mono" value="" disabled placeholder="A CEX needs no address: its balances are read through the exchange's API." />
+            }
+            else
+            {
+                <input class="mono" @bind="address" maxlength="120" placeholder="0x… / bc1… / 3… / r… / addr1… / G… / Solana" spellcheck="false" />
+            }
         </label>
     </div>
     @if (formError is not null)
@@ -143,6 +159,16 @@ else
         {
             loadError = $"The wallets could not be loaded: {ex.Message}";
         }
+    }
+
+        /// <summary>
+    /// Runs after the type dropdown changes. Choosing CEX clears the address (the input is then disabled too), so a
+    /// typed address is not silently kept and sent along with an exchange account.
+    /// </summary>
+    private void OnTypeChanged()
+    {
+        if (type == WalletType.Cex) address = "";
+        formError = null;
     }
 
     private void Edit(Wallet wallet)

@@ -1,6 +1,7 @@
 using CryptoPortfolioManager.Core.Abstractions;
 using CryptoPortfolioManager.Core.Entities;
 using CryptoPortfolioManager.Core.Models;
+using CryptoPortfolioManager.Core.Services;
 using Microsoft.EntityFrameworkCore;
 
 namespace CryptoPortfolioManager.Infrastructure.Persistence;
@@ -29,9 +30,13 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
             .SingleOrDefaultAsync(w => w.Id == wallet.Id, ct)
             ?? throw new InvalidOperationException($"Wallet {wallet.Id} does not exist.");
 
-        // Positions were read from the old address (or from a wallet that can no longer be scanned): drop them,
-        // the next scan recreates what is still there.
-        if (!string.Equals(stored.Address, wallet.Address, StringComparison.Ordinal) || wallet.Type == WalletType.Cex)
+                // Positions were read with other settings (an old address, another exchange, or the wallet can no longer be
+        // read at all) and no longer describe the wallet: drop them, the next scan recreates what is still there.
+        // Changing only the name keeps them (renamed below).
+        var addressChanged = !string.Equals(stored.Address, wallet.Address, StringComparison.Ordinal);
+        var sourceChanged = !string.Equals(stored.Source, wallet.Source, StringComparison.OrdinalIgnoreCase);
+        var noLongerScannable = !IsScannable(wallet);
+        if (addressChanged || (sourceChanged && wallet.Type == WalletType.Cex) || noLongerScannable)
         {
             RemoveWithLog(db, stored.Positions, "Wallet changed", DateTime.UtcNow);
             stored.LastScannedAtUtc = null;
@@ -118,7 +123,7 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
         }
     }
 
-    public async Task DeleteWhitelistedTokenAsync(int id, CancellationToken ct = default)
+        public async Task DeleteWhitelistedTokenAsync(int id, CancellationToken ct = default)
     {
         await using var db = await factory.CreateDbContextAsync(ct);
         var stored = await db.WhitelistedTokens.SingleOrDefaultAsync(t => t.Id == id, ct);
@@ -130,16 +135,21 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
     }
 
     public async Task<PositionChanges> ApplyScanAsync(
-        int walletId, IReadOnlyCollection<TokenBalance> balances, string? error, DateTime nowUtc, CancellationToken ct = default)
+        int walletId, IReadOnlyCollection<TokenBalance> balances, string? error, DateTime nowUtc,
+        IReadOnlyCollection<ExchangePosition> exchangeHoldings, CancellationToken ct = default)
     {
         await using var db = await factory.CreateDbContextAsync(ct);
         var wallet = await db.Wallets.SingleOrDefaultAsync(w => w.Id == walletId, ct);
         if (wallet is null) return new PositionChanges(0, 0, 0); // deleted while the scan was running
 
+                // One statement per scan: the exchange holdings and the on-chain balances are all saved together at the end of
+        // this method, so a half-applied scan cannot be stored.
         var tokens = await db.WhitelistedTokens.AsNoTracking().ToListAsync(ct);
         var positions = await db.Positions.Include(p => p.Asset)
             .Where(p => p.WalletId == walletId || p.WalletAddress == wallet.Address)
             .ToListAsync(ct);
+
+        var exchangeChanges = await ApplyExchangeHoldingsAsync(db, wallet, exchangeHoldings, null, nowUtc, positions, tokens, ct);
 
         int added = 0, updated = 0, removed = 0;
         const string reason = "Wallet scan";
@@ -199,11 +209,188 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
             removed++;
         }
 
+                wallet.LastScanError = error;
+        if (error is null) wallet.LastScannedAtUtc = nowUtc;
+
+        await db.SaveChangesAsync(ct);
+        return new PositionChanges(added + exchangeChanges.Added, updated + exchangeChanges.Updated, removed + exchangeChanges.Removed);
+    }
+
+    public async Task<PositionChanges> ApplyExchangeScanAsync(
+        int walletId, IReadOnlyCollection<ExchangePosition> holdings, string? error, DateTime nowUtc, CancellationToken ct = default)
+    {
+        await using var db = await factory.CreateDbContextAsync(ct);
+        var wallet = await db.Wallets.SingleOrDefaultAsync(w => w.Id == walletId, ct);
+        if (wallet is null) return new PositionChanges(0, 0, 0); // deleted while the scan was running
+
+        var tokens = await db.WhitelistedTokens.Include(t => t.Asset).ToListAsync(ct);
+        var positions = await db.Positions.Include(p => p.Asset).Where(p => p.WalletId == walletId).ToListAsync(ct);
+
+                var changes = await ApplyExchangeHoldingsAsync(db, wallet, holdings, error, nowUtc, positions, tokens, ct);
+
         wallet.LastScanError = error;
         if (error is null) wallet.LastScannedAtUtc = nowUtc;
 
         await db.SaveChangesAsync(ct);
+        return changes;
+    }
+
+        /// <summary>
+    /// The exchange half of a scan, working on an already-loaded context and wallet. It never saves: the caller does,
+    /// so an on-chain scan and an exchange scan that share a context end up in a single transaction. New positions are
+    /// added to <paramref name="db"/> and to <paramref name="positions"/>, so a later part of the same scan sees them.
+    /// </summary>
+    private static async Task<PositionChanges> ApplyExchangeHoldingsAsync(
+        AppDbContext db,
+        Wallet wallet,
+        IReadOnlyCollection<ExchangePosition> holdings,
+        string? error,
+        DateTime nowUtc,
+        List<Position> positions,
+        List<WhitelistedToken> tokens,
+        CancellationToken ct)
+    {
+        // A failed read is not a zero balance: without holdings nothing is applied and the stored positions stay.
+        if (error is not null)
+        {
+            wallet.LastScanError = error;
+            return new PositionChanges(0, 0, 0);
+        }
+
+        // Positions of an exchange account are identified by their wallet; they have no address and therefore fall
+        // outside the unique (asset, chain, address) index. All of them hang off this WalletId.
+        var bySymbol = holdings
+            .GroupBy(h => h.Symbol.Trim(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Sum(h => h.Quantity), StringComparer.OrdinalIgnoreCase);
+
+        int added = 0, updated = 0, removed = 0;
+        const string reason = "Exchange scan";
+
+        // Tokens the user tracks: the whitelist decides what an exchange balance is called and how it is priced.
+        // A ticker whitelisted on several chains (USDC on Cronos and on BNB Smart Chain) is reported once by the
+        // exchange, so the whole quantity goes to the first chain of the group and the rest is untouched. This keeps
+        // one quantity per asset per exchange for the portfolio total.
+        var tracked = tokens
+            .GroupBy(t => t.Symbol, StringComparer.OrdinalIgnoreCase)
+            .Select(g => (Token: g.OrderBy(t => t.Id).First(), Quantity: bySymbol.GetValueOrDefault(g.Key, 0m)))
+            .ToList();
+
+        foreach (var (token, quantity) in tracked)
+        {
+            var position = positions.FirstOrDefault(p =>
+                p.AssetId == token.AssetId && p.SourceType == PositionSourceType.Exchange);
+
+            if (quantity > 0)
+            {
+                if (position is null)
+                {
+                    var created = new Position
+                    {
+                        AssetId = token.AssetId, Asset = token.Asset, WalletOrExchangeName = wallet.Name,
+                        SourceType = PositionSourceType.Exchange, Chain = token.Chain, WalletAddress = null,
+                        Quantity = quantity, WalletId = wallet.Id,
+                        LastSyncedAtUtc = nowUtc, CreatedAtUtc = nowUtc, UpdatedAtUtc = nowUtc
+                    };
+                    db.Positions.Add(created);
+                    positions.Add(created);
+                    LogChange(db, created, PositionChangeType.Added, null, quantity, reason, nowUtc);
+                    added++;
+                }
+                else
+                {
+                    if (position.Quantity != quantity)
+                    {
+                        LogChange(db, position, PositionChangeType.Updated, position.Quantity, quantity, reason, nowUtc);
+                        updated++;
+                    }
+                    position.Quantity = quantity;
+                    position.Chain = token.Chain;
+                    position.WalletOrExchangeName = wallet.Name;
+                    position.LastSyncedAtUtc = nowUtc;
+                    position.UpdatedAtUtc = nowUtc;
+                }
+            }
+            else if (position is not null)
+            {
+                LogChange(db, position, PositionChangeType.Removed, position.Quantity, null, reason, nowUtc);
+                db.Positions.Remove(position);
+                positions.Remove(position);
+                removed++;
+            }
+        }
+
+        // Holdings the portfolio does not track yet: their own asset, no chain and a made-up CoinGecko id (the
+        // exchange only knows its own ticker). Without a price they do not count towards the portfolio value, but they
+        // do show up per wallet, so it is clear what the exchange holds.
+        //
+        // The assets are resolved first, without saving, so a position can reference an asset that is still new.
+        var untracked = holdings
+            .Where(h => !tokens.Any(t => string.Equals(t.Symbol, h.Symbol, StringComparison.OrdinalIgnoreCase)))
+            .GroupBy(h => h.Symbol.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(g => (Holding: g.First(), Quantity: g.Sum(h => h.Quantity)))
+            .ToList();
+
+        var untrackedAssets = new Dictionary<string, Asset>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (holding, _) in untracked)
+            untrackedAssets[holding.Symbol] = await FindOrCreateExchangeAssetAsync(db, holding, ct);
+
+        foreach (var (holding, quantity) in untracked)
+        {
+            if (quantity <= 0) continue;
+
+            var asset = untrackedAssets[holding.Symbol];
+            var position = positions.FirstOrDefault(p =>
+                p.SourceType == PositionSourceType.Exchange && p.Chain == null && p.AssetId == asset.Id);
+
+            if (position is null)
+            {
+                var created = new Position
+                {
+                    AssetId = asset.Id, Asset = asset, WalletOrExchangeName = wallet.Name,
+                    SourceType = PositionSourceType.Exchange, Chain = null, WalletAddress = null,
+                    Quantity = quantity, WalletId = wallet.Id,
+                    LastSyncedAtUtc = nowUtc, CreatedAtUtc = nowUtc, UpdatedAtUtc = nowUtc
+                };
+                db.Positions.Add(created);
+                positions.Add(created);
+                LogChange(db, created, PositionChangeType.Added, null, quantity, reason, nowUtc);
+                added++;
+            }
+            else
+            {
+                if (position.Quantity != quantity)
+                {
+                    LogChange(db, position, PositionChangeType.Updated, position.Quantity, quantity, reason, nowUtc);
+                    updated++;
+                }
+                position.Quantity = quantity;
+                position.WalletOrExchangeName = wallet.Name;
+                position.LastSyncedAtUtc = nowUtc;
+                position.UpdatedAtUtc = nowUtc;
+            }
+        }
+
         return new PositionChanges(added, updated, removed);
+    }
+
+    /// <summary>
+    /// The asset behind an exchange holding that is not whitelisted. A ticker that is already known is reused (so a
+    /// coin that is whitelisted on one chain is not created twice), otherwise a new asset is added. The CoinGecko id of
+    /// a new asset is the exchange's own ticker, which no other asset has, so the unique index stays satisfied. It is
+    /// not a real CoinGecko id, so the asset simply has no price until it is whitelisted; it then keeps its id and the
+    /// positions follow it, because they are linked by <see cref="Asset.Id"/>.
+    /// </summary>
+    private static async Task<Asset> FindOrCreateExchangeAssetAsync(AppDbContext db, ExchangePosition holding, CancellationToken ct)
+    {
+        var symbol = holding.Symbol.Trim();
+
+        var asset = await db.Assets.FirstOrDefaultAsync(a => a.Symbol == symbol, ct)
+                    ?? db.Assets.Local.FirstOrDefault(a => string.Equals(a.Symbol, symbol, StringComparison.OrdinalIgnoreCase));
+        if (asset is not null) return asset;
+
+        asset = new Asset { Name = holding.AssetName, Symbol = symbol, CoinGeckoId = $"exchange-{symbol.ToLowerInvariant()}" };
+        db.Assets.Add(asset);
+        return asset;
     }
 
     private static async Task RemoveScannedPositionsAsync(AppDbContext db, WhitelistedToken token, CancellationToken ct)
@@ -263,8 +450,16 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
         var asset = await db.Assets.SingleOrDefaultAsync(a => a.CoinGeckoId == coinGeckoId, ct);
         if (asset is not null) return asset;
 
-        asset = new Asset { Name = token.Name, Symbol = token.Symbol, CoinGeckoId = coinGeckoId };
+                asset = new Asset { Name = token.Name, Symbol = token.Symbol, CoinGeckoId = coinGeckoId };
         db.Assets.Add(asset);
         return asset;
     }
+
+    /// <summary>
+    /// Whether the scan can read this wallet: an on-chain address for every on-chain type, and a supported exchange as
+    /// the source for a CEX (whose balances come from the exchange's API instead of an address).
+    /// </summary>
+    private static bool IsScannable(Wallet wallet) => wallet.Type == WalletType.Cex
+        ? ExchangeCatalog.Match(wallet.Source) is not null
+        : BlockchainAddress.DetectFamily(wallet.Address) is not null;
 }

@@ -41,11 +41,19 @@ else
         var items = positions.Where(p => p.WalletId == wallet.Id).ToList();
         <section class="form-card">
             <h2>@wallet.Name <span class="pill pill-@wallet.Type.ToString().ToLowerInvariant()">@Format.WalletTypeLabel(wallet.Type)</span></h2>
-            <p class="muted">
-                <span class="mono" title="@wallet.Address">@wallet.Address</span> ·
+                        <p class="muted">
                 @if (wallet.Type == WalletType.Cex)
                 {
-                    <span>not scanned on-chain</span>
+                    <span>@Format.ScanSource(wallet)</span>
+                }
+                else
+                {
+                    <span class="mono" title="@wallet.Address">@wallet.Address</span>
+                }
+                ·
+                                @if (!Format.IsScannable(wallet))
+                {
+                    <span>not scanned: @(wallet.Type == WalletType.Cex ? "not a supported exchange" : "no on-chain address")</span>
                 }
                 else if (wallet.LastScanError is not null)
                 {
@@ -58,7 +66,7 @@ else
                 }
             </p>
 
-            @if (wallet.Type != WalletType.Cex)
+            @if (Format.IsScannable(wallet))
             {
                 <div class="form-actions">
                     <button class="btn btn-secondary" disabled="@(scanningId is not null)" @onclick="() => ScanAsync(wallet.Id)">
@@ -92,9 +100,9 @@ else
                         {
                             var price = prices.GetValueOrDefault(p.AssetId);
                             <tr>
-                                <td class="name">@p.Asset?.Name</td>
+                                                                <td class="name">@p.Asset?.Name</td>
                                 <td>@p.Asset?.Symbol</td>
-                                <td>@Format.ChainName(p.Chain)</td>
+                                <td>@(p.SourceType == PositionSourceType.Exchange ? "exchange" : Format.ChainName(p.Chain))</td>
                                 <td class="num">@Format.Quantity(p.Quantity)</td>
                                 <td class="num">@Format.Usd(price)</td>
                                 <td class="num">@Format.Usd(price * p.Quantity)</td>

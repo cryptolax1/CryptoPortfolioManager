@@ -2,6 +2,7 @@ using CryptoPortfolioManager.Core;
 using CryptoPortfolioManager.Infrastructure;
 using CryptoPortfolioManager.Infrastructure.Blockchain;
 using CryptoPortfolioManager.Infrastructure.CoinGecko;
+using CryptoPortfolioManager.Infrastructure.Exchanges;
 using CryptoPortfolioManager.Infrastructure.Persistence;
 using CryptoPortfolioManager.Web;
 using CryptoPortfolioManager.Web.Components;
@@ -33,6 +34,7 @@ builder.Services.AddCore();
 builder.Services.AddInfrastructure(connectionString);
 builder.Services.AddCoinGeckoPriceProvider(builder.Configuration);
 builder.Services.AddBlockchainBalanceReaders(builder.Configuration);
+builder.Services.AddExchangeBalanceReaders(builder.Configuration);
 
 var app = builder.Build();
 

@@ -123,7 +123,7 @@ De knop **Re-scan wallets** (naast *Update prices*) werkt de posities bij op bas
 - **De scan is leidend.** Na een scan zonder fouten verdwijnen alle posities die geen wallet in de scan bezit (handmatige, exchange- en oude voorbeeldposities) uit de huidige weergave. Assets zonder posities worden niet getoond; hun prijsgeschiedenis blijft bewaard. Is er een leesfout, dan wordt er niets opgeruimd.
 - **Historie (`/history`):** elke toevoeging, hoeveelheidswijziging en verwijdering van een positie wordt vastgelegd in `PositionChangeLogs` (tijdstip, asset, wallet, chain, vorige en nieuwe hoeveelheid, reden). Dit logboek wordt nooit gewist, ook niet als een asset of wallet later verdwijnt, zodat je kunt terugrekenen welke assets je op een moment had.
 - **Handmatige posities** worden dus bij de eerstvolgende foutloze scan verwijderd (en gelogd). Een wallet verwijderen verwijdert ook de ingelezen posities van die wallet. Wijzigt het adres, dan worden de ingelezen posities verwijderd en weer opgebouwd bij de volgende scan.
-- **CEX-wallets** worden opgeslagen maar niet gescand (geen exchange-integratie). Wallets met type cex accepteren een vrij identificatieveld i.p.v. een blockchain-adres.
+- **CEX-wallets** worden opgeslagen en alleen gescand als het adres een echt on-chain adres is (bijv. een deposit/withdrawal-adres). Draagt een CEX-wallet een vrij identificatieveld (zoals een loginnaam) i.p.v. een blockchain-adres, dan wordt hij overgeslagen. Wallets met type cex accepteren een vrij identificatieveld i.p.v. een blockchain-adres.
 - Een token met dezelfde identifier op meerdere chains (USDC) hoort bij één asset: hoeveelheden worden opgeteld en de prijs wordt één keer opgehaald. Nieuwe assets hebben pas een prijs na **Update prices**.
 - Startwaarden (alleen als wallets én whitelist leeg zijn, dus bij de eerste start): wallets *Cronos Main* (`0x5971…8bFc`) en *Thor Vapor* (`0x1ED7…F8e3`), beide hot/Metamask; whitelist CRO en USDC op Cronos, en XRP, USDC en BNB op BNB Smart Chain. De tokencontracten en decimals zijn bij de publieke nodes gecontroleerd (symbool en decimals).
 
@@ -146,6 +146,30 @@ dotnet user-secrets set "CoinGecko:ApiKey" "<jouw-key>" --project src\CryptoPort
 User Secrets worden geladen in de omgeving `Development` (de launch-profielen doen dit). Buiten Development gebruik je de omgevingsvariabele `CoinGecko__ApiKey`. Zonder key toont de app een duidelijke foutmelding; bestaande prijzen blijven ongewijzigd.
 
 Overige instellingen staan in `appsettings.json` onder `CoinGecko` (`BaseUrl`, `TimeoutSeconds`, `MaxRetries`, `MinRequestInterval`).
+
+### Exchange-accounts (API-keys per beurs)
+
+Een wallet van het type **Exchange** wordt niet on-chain gelezen: de balans komt uit de API van de beurs. Vul bij het
+toevoegen als **Source** de naam van de beurs in (hetzelfde geldt voor het adres: dat blijft leeg). Ondersteund zijn
+**Bitvavo** en **Crypto.com**. De bijbehorende keys zijn de gewone `available + inOrder`-balans (Bitvavo) en de
+`crypto/accounts`-balans (Crypto.com, `LD`-lendrekeningen worden bij de coin geteld).
+
+Maak een **read-only** API-key aan bij de beurs en sla hem lokaal op (nooit in de broncode):
+
+```powershell
+dotnet user-secrets set "Exchange:Bitvavo:ApiKey" "<jouw-key>"     --project src\CryptoPortfolioManager.Web
+dotnet user-secrets set "Exchange:Bitvavo:ApiSecret" "<jouw-secret>" --project src\CryptoPortfolioManager.Web
+```
+
+Voor Crypto.com gebruik je `Exchange:Crypto.com:ApiKey` en `Exchange:Crypto.com:ApiSecret` (met de Crypto Developer
+Dashboard-key van de App-API). Buiten `Development` gebruik je de omgevingsvariabelen, bijvoorbeeld
+`Exchange__Bitvavo__ApiKey`. Ontbreken de keys, dan meldt de scan dat met de exacte commando's; bestaande posities van
+die wallet blijven dan gewoon staan.
+
+De scan neemt van de beurs alleen over wat op de [whitelist](/whitelist) staat: die bepaalt de naam (CoinGecko-id) en
+dus de prijs van het actief. Een coin die je nog niet whitelist is, verschijnt wél onder de wallet met het eigen ticker
+van de beurs (zonder prijs), zodat je ziet wat er in de account zit. Overige instellingen (basiswaarten, timeout) staan
+in `appsettings.json` onder `Exchange`.
 
 ### Gebruikte endpoints
 

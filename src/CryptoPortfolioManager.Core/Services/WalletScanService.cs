@@ -25,9 +25,34 @@ public sealed class WalletScanLock
 public class WalletScanService(
     IWalletRepository repository,
     IWalletBalanceReader reader,
+    IEnumerable<IExchangeBalanceReader> exchangeReaders,
     WalletScanLock scanLock,
     TimeProvider clock) : IWalletScanService
 {
+    private readonly Dictionary<string, IExchangeBalanceReader> readers = exchangeReaders
+        .GroupBy(r => r.Name, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Reads one exchange account and stores the result. A failed read is reported as a wallet error and leaves the
+    /// stored positions untouched, exactly like a failed on-chain read.
+    /// </summary>
+    private async Task<(PositionChanges Changes, string? Error)> ReadExchangeAsync(
+        Wallet wallet, IExchangeBalanceReader exchange, CancellationToken ct)
+    {
+        try
+        {
+            var holdings = await exchange.GetBalancesAsync(ct);
+            var changes = await repository.ApplyExchangeScanAsync(wallet.Id, holdings, null, clock.GetUtcNow().UtcDateTime, ct);
+            return (changes, null);
+        }
+        catch (ExchangeBalanceException ex)
+        {
+            // Recording the error (with a null holdings list) does not touch the positions, only the wallet's last error.
+            await repository.ApplyExchangeScanAsync(wallet.Id, [], $"{wallet.Name}: {ex.Message}", clock.GetUtcNow().UtcDateTime, ct);
+            return (new PositionChanges(0, 0, 0), $"{wallet.Name}: {ex.Message}");
+        }
+    }
     public Task<WalletScanResult> ScanAsync(CancellationToken ct = default) => RunAsync(null, ct);
 
     public Task<WalletScanResult> ScanWalletAsync(int walletId, CancellationToken ct = default) => RunAsync(walletId, ct);
@@ -51,21 +76,40 @@ public class WalletScanService(
             var errors = new List<string>();
             int scanned = 0, skipped = 0, added = 0, updated = 0, removed = 0;
 
-            foreach (var wallet in wallets)
+                        foreach (var wallet in wallets)
             {
+                // An exchange account is read through the exchange's own API, not from an address.
                 if (wallet.Type == WalletType.Cex)
                 {
-                    skipped++;
+                    var exchange = ExchangeCatalog.Match(wallet.Source);
+                    if (exchange is null || !readers.TryGetValue(exchange, out var exchangeReader))
+                    {
+                        skipped++;
+                        errors.Add($"{wallet.Name}: '{wallet.Source}' is not a supported exchange ({string.Join(", ", ExchangeCatalog.All)}).");
+                        continue;
+                    }
+
+                    var (exchangeChanges, exchangeError) = await ReadExchangeAsync(wallet, exchangeReader, ct);
+                    scanned++;
+                    added += exchangeChanges.Added;
+                    updated += exchangeChanges.Updated;
+                    removed += exchangeChanges.Removed;
+                    if (exchangeError is not null) errors.Add(exchangeError);
                     continue;
                 }
 
+                // An on-chain wallet is read only when its address is a recognised address; otherwise nothing can be read.
                 var family = BlockchainAddress.DetectFamily(wallet.Address);
-                var walletTokens = family is null ? [] : tokens.Where(t => ChainInfo.FamilyOf(t.Chain) == family).ToList();
+                if (family is null)
+                {
+                    skipped++;
+                    errors.Add($"{wallet.Name}: the address format is not recognised, so it cannot be scanned.");
+                    continue;
+                }
+
+                var walletTokens = tokens.Where(t => ChainInfo.FamilyOf(t.Chain) == family).ToList();
                 var balances = new List<TokenBalance>();
                 var walletErrors = new List<string>();
-
-                if (family is null)
-                    walletErrors.Add($"{wallet.Name}: the address format is not recognised, so it cannot be scanned.");
 
                 // An address only exists on chains of its own family (an EVM address is not an XRP Ledger account).
                 foreach (var token in walletTokens)
@@ -81,9 +125,9 @@ public class WalletScanService(
                     }
                 }
 
-                var changes = await repository.ApplyScanAsync(
+                                var changes = await repository.ApplyScanAsync(
                     wallet.Id, balances, walletErrors.Count == 0 ? null : string.Join(Environment.NewLine, walletErrors),
-                    clock.GetUtcNow().UtcDateTime, ct);
+                    clock.GetUtcNow().UtcDateTime, [], ct);
 
                 scanned++;
                 added += changes.Added;

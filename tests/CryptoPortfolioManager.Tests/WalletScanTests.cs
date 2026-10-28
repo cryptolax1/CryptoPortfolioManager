@@ -34,11 +34,29 @@ public class WalletScanTests
         }
     }
 
+        private sealed class FakeExchange : IExchangeBalanceReader
+    {
+        public string Name { get; init; } = ExchangeCatalog.Bitvavo;
+        public bool IsConfigured { get; set; } = true;
+        public List<ExchangePosition> Holdings { get; } = [];
+        public Exception? Failure { get; set; }
+        public int Calls { get; private set; }
+
+        public Task<IReadOnlyList<ExchangePosition>> GetBalancesAsync(CancellationToken ct = default)
+        {
+            Calls++;
+            return Failure is not null
+                ? Task.FromException<IReadOnlyList<ExchangePosition>>(Failure)
+                : Task.FromResult<IReadOnlyList<ExchangePosition>>(Holdings);
+        }
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         public required TestDatabase Db { get; init; }
         public required WalletRepository Repository { get; init; }
         public required FakeReader Reader { get; init; }
+        public required FakeExchange Exchange { get; init; }
         public required FakeTimeProvider Clock { get; init; }
         public required WalletScanService Scan { get; init; }
         public WalletService Wallets => new(Repository);
@@ -57,11 +75,12 @@ public class WalletScanTests
 
             var repository = new WalletRepository(db.CreateFactory());
             var reader = new FakeReader();
+            var exchange = new FakeExchange();
             var clock = new FakeTimeProvider(new DateTimeOffset(2026, 10, 25, 9, 0, 0, TimeSpan.Zero));
             return new Fixture
             {
-                Db = db, Repository = repository, Reader = reader, Clock = clock,
-                Scan = new WalletScanService(repository, reader, new WalletScanLock(), clock)
+                Db = db, Repository = repository, Reader = reader, Exchange = exchange, Clock = clock,
+                Scan = new WalletScanService(repository, reader, [exchange], new WalletScanLock(), clock)
             };
         }
 
@@ -322,18 +341,147 @@ public class WalletScanTests
         Assert.Contains(await check.PositionChangeLogs.ToListAsync(Ct), l => l is { ChangeType: PositionChangeType.Removed, Reason: "Wallet deleted" });
     }
 
-    [Fact]
-    public async Task Scan_SkipsCexWallets()
+        [Fact]
+    public async Task Scan_Exchange_WritesWhitelistedHoldings_AndIncludesMoneyInOpenOrders()
     {
         await using var f = await Fixture.CreateAsync(defaults: false);
-        Assert.True((await f.Wallets.AddAsync(new WalletInput("my-bitvavo-account", "Bitvavo", WalletType.Cex, "Bitvavo"), Ct)).Ok);
+        Assert.True((await f.Wallets.AddAsync(new WalletInput("", "Bitvavo", WalletType.Cex, "Bitvavo"), Ct)).Ok);
         Assert.True((await f.Whitelist.AddAsync(new WhitelistedTokenInput("Cronos", "CRO", Chain.Cronos, null, 18, "crypto-com-chain"), Ct)).Ok);
+        Assert.True((await f.Whitelist.AddAsync(new WhitelistedTokenInput(
+            "USD Coin", "USDC", Chain.Cronos, UsdcCronos, 6, "usd-coin"), Ct)).Ok);
+
+        // The client already splits "available" + "inOrder" into one quantity per ticker.
+        f.Exchange.Holdings.Add(new ExchangePosition("CRO", "CRO", "exchange-cro", null, null, 42.5m));
+        f.Exchange.Holdings.Add(new ExchangePosition("USDC", "USDC", "exchange-usdc", null, null, 10m));
+
+        var result = await f.Scan.ScanAsync(Ct);
+
+        Assert.Equal(1, result.WalletsScanned);
+        Assert.Equal(0, result.WalletsSkipped);
+        Assert.Empty(result.Errors);
+        Assert.Equal(new PositionChanges(2, 0, 0), result.Changes);
+
+        var positions = await f.PositionsAsync();
+        var cro = positions.Single(p => p.Asset!.Symbol == "CRO");
+        Assert.Equal(42.5m, cro.Quantity);
+        Assert.Equal(PositionSourceType.Exchange, cro.SourceType);
+        Assert.Equal(Chain.Cronos, cro.Chain);
+        Assert.Null(cro.WalletAddress);
+        Assert.Equal("Bitvavo", cro.WalletOrExchangeName);
+        Assert.NotNull(cro.WalletId);
+        Assert.Equal(10m, positions.Single(p => p.Asset!.Symbol == "USDC").Quantity);
+
+        // The exchange was never read through the on-chain reader.
+        Assert.Empty(f.Reader.Calls);
+    }
+
+    [Fact]
+    public async Task Scan_Exchange_RemovesWhitelistedHoldingThatIsGone_AndKeepsTheRest()
+    {
+        await using var f = await Fixture.CreateAsync(defaults: false);
+        Assert.True((await f.Wallets.AddAsync(new WalletInput("", "Bitvavo", WalletType.Cex, "Bitvavo"), Ct)).Ok);
+        Assert.True((await f.Whitelist.AddAsync(new WhitelistedTokenInput("Cronos", "CRO", Chain.Cronos, null, 18, "crypto-com-chain"), Ct)).Ok);
+        Assert.True((await f.Whitelist.AddAsync(new WhitelistedTokenInput(
+            "USD Coin", "USDC", Chain.Cronos, UsdcCronos, 6, "usd-coin"), Ct)).Ok);
+
+        f.Exchange.Holdings.Add(new ExchangePosition("CRO", "CRO", "exchange-cro", null, null, 40m));
+        f.Exchange.Holdings.Add(new ExchangePosition("USDC", "USDC", "exchange-usdc", null, null, 10m));
+        await f.Scan.ScanAsync(Ct);
+
+        // The exchange now reports only CRO: the USDC balance is gone, so its position goes too.
+        f.Exchange.Holdings.Clear();
+        f.Exchange.Holdings.Add(new ExchangePosition("CRO", "CRO", "exchange-cro", null, null, 0m));
+        var result = await f.Scan.ScanAsync(Ct);
+
+        Assert.Equal(new PositionChanges(0, 0, 2), result.Changes);
+        Assert.Empty(await f.PositionsAsync());
+        await using var check = f.Db.CreateContext();
+        Assert.Equal(2, await check.PositionChangeLogs.CountAsync(l => l.Reason == "Exchange scan" && l.ChangeType == PositionChangeType.Removed, Ct));
+    }
+
+    [Fact]
+    public async Task Scan_Exchange_ShowsHoldingsThatAreNotWhitelisted_WithoutIncludingThemInTheTotal()
+    {
+        await using var f = await Fixture.CreateAsync(defaults: false);
+        Assert.True((await f.Wallets.AddAsync(new WalletInput("", "Bitvavo", WalletType.Cex, "Bitvavo"), Ct)).Ok);
+        Assert.True((await f.Whitelist.AddAsync(new WhitelistedTokenInput("Cronos", "CRO", Chain.Cronos, null, 18, "crypto-com-chain"), Ct)).Ok);
+
+        f.Exchange.Holdings.Add(new ExchangePosition("CRO", "CRO", "exchange-cro", null, null, 5m));
+        f.Exchange.Holdings.Add(new ExchangePosition("ETH", "Ethereum", "exchange-eth", null, null, 0.25m));
+        var result = await f.Scan.ScanAsync(Ct);
+
+        Assert.Empty(result.Errors);
+        var positions = await f.PositionsAsync();
+        Assert.Equal(2, positions.Count);
+
+        // Whitelisted: a real asset with a chain, so it is priced and counted.
+        var cro = positions.Single(p => p.Asset!.Symbol == "CRO");
+        Assert.Equal("crypto-com-chain", cro.Asset!.CoinGeckoId);
+        Assert.Equal(Chain.Cronos, cro.Chain);
+
+        // Not whitelisted: shown under the wallet, but with no CoinGecko id (so no price) and no chain.
+        var eth = positions.Single(p => p.Asset!.Symbol == "ETH");
+        Assert.Equal(PositionSourceType.Exchange, eth.SourceType);
+        Assert.Null(eth.Chain);
+        Assert.StartsWith("exchange-", eth.Asset!.CoinGeckoId);
+    }
+
+    [Fact]
+    public async Task Scan_Exchange_WithFailedRead_ReportsTheError_AndKeepsTheStoredPositions()
+    {
+        await using var f = await Fixture.CreateAsync(defaults: false);
+        Assert.True((await f.Wallets.AddAsync(new WalletInput("", "Bitvavo", WalletType.Cex, "Bitvavo"), Ct)).Ok);
+        Assert.True((await f.Whitelist.AddAsync(new WhitelistedTokenInput("Cronos", "CRO", Chain.Cronos, null, 18, "crypto-com-chain"), Ct)).Ok);
+
+        f.Exchange.Holdings.Add(new ExchangePosition("CRO", "CRO", "exchange-cro", null, null, 5m));
+        await f.Scan.ScanAsync(Ct);
+
+        f.Exchange.Failure = new ExchangeBalanceException("Bitvavo rejected the API key or signature (HTTP 401).");
+        var result = await f.Scan.ScanAsync(Ct);
+
+        Assert.Contains(result.Errors, e => e.Contains("HTTP 401"));
+        Assert.Equal(5m, Assert.Single(await f.PositionsAsync()).Quantity); // a failed read is not a zero balance
+
+        await using var check = f.Db.CreateContext();
+        var wallet = await check.Wallets.SingleAsync(Ct);
+        Assert.Contains("401", wallet.LastScanError);
+        Assert.NotNull(wallet.LastScannedAtUtc); // the earlier success is still recorded as the last complete scan
+    }
+
+    [Fact]
+    public async Task Scan_Exchange_WithUnsupportedSource_IsSkipped_NotFailed()
+    {
+        await using var f = await Fixture.CreateAsync(defaults: false);
+        // A wallet saved before an exchange was removed, or a hand-edited source, must not break the whole scan.
+        await using (var ctx = f.Db.CreateContext())
+        {
+            ctx.Wallets.Add(new Wallet { Address = "", Name = "Old exchange", Type = WalletType.Cex, Source = "MtGox" });
+            await ctx.SaveChangesAsync(Ct);
+        }
 
         var result = await f.Scan.ScanAsync(Ct);
 
         Assert.Equal(0, result.WalletsScanned);
         Assert.Equal(1, result.WalletsSkipped);
-        Assert.Empty(f.Reader.Calls);
+        Assert.Contains(result.Errors, e => e.Contains("MtGox"));
+        Assert.Equal(0, f.Exchange.Calls);
+    }
+
+    [Fact]
+    public async Task ScanWallet_OnExchange_ReadsOnlyThatWallet()
+    {
+        await using var f = await Fixture.CreateAsync(defaults: false);
+        Assert.True((await f.Wallets.AddAsync(new WalletInput("", "Bitvavo", WalletType.Cex, "Bitvavo"), Ct)).Ok);
+        Assert.True((await f.Whitelist.AddAsync(new WhitelistedTokenInput("Cronos", "CRO", Chain.Cronos, null, 18, "crypto-com-chain"), Ct)).Ok);
+        f.Exchange.Holdings.Add(new ExchangePosition("CRO", "CRO", "exchange-cro", null, null, 7m));
+
+        var wallet = (await f.Wallets.GetWalletsAsync(Ct)).Single();
+        var result = await f.Scan.ScanWalletAsync(wallet.Id, Ct);
+
+        Assert.Equal(1, result.WalletsScanned);
+        Assert.Empty(result.Errors);
+        Assert.Equal(1, f.Exchange.Calls);
+        Assert.Equal(7m, Assert.Single(await f.PositionsAsync()).Quantity);
     }
 
     [Fact]
@@ -448,8 +596,41 @@ public class WalletScanTests
         await f.Scan.ScanAsync(Ct);
         Assert.Single(await f.PositionsAsync());
 
-        await f.Wallets.DeleteAsync(wallet.Id, Ct);
+                        await f.Wallets.DeleteAsync(wallet.Id, Ct);
         Assert.Empty(await f.PositionsAsync());
+    }
+
+            [Fact]
+    public async Task Wallet_TypeIsFixedAtCreation_AndAnEditCannotTurnAWalletIntoACex()
+    {
+        await using var f = await Fixture.CreateAsync();
+        f.Reader.Balances[(AddressA, Chain.Cronos, null)] = 100m;
+        await f.Scan.ScanAsync(Ct);
+        var wallet = (await f.Wallets.GetWalletsAsync(Ct)).Single(w => w.Address == AddressA);
+        Assert.Equal(WalletType.Hot, wallet.Type);
+
+        // An edit that asks for CEX is accepted but the stored type (and therefore the way it is read) stays hot.
+        Assert.True((await f.Wallets.UpdateAsync(wallet.Id, new WalletInput(AddressA, "Renamed", WalletType.Cex, "Bitvavo"), Ct)).Ok);
+
+        var updated = (await f.Wallets.GetWalletsAsync(Ct)).Single(w => w.Id == wallet.Id);
+        Assert.Equal(WalletType.Hot, updated.Type);
+        Assert.Equal("Renamed", updated.Name);
+
+        // The wallet is still read on-chain, and the scanned position survives the rename.
+        var position = Assert.Single(await f.PositionsAsync());
+        Assert.Equal(100m, position.Quantity);
+        Assert.Equal("Renamed", position.WalletOrExchangeName);
+    }
+
+    [Fact]
+    public async Task Wallet_UpdatingAMissingWallet_FailsInsteadOfThrowing()
+    {
+        await using var f = await Fixture.CreateAsync(defaults: false);
+
+        var result = await f.Wallets.UpdateAsync(999, new WalletInput(AddressA, "Ghost", WalletType.Hot, "Metamask"), Ct);
+
+        Assert.False(result.Ok);
+        Assert.Contains("no longer exists", result.Error);
     }
 
     // ---- whitelist management -----------------------------------------------------------------------------------

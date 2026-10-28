@@ -1,5 +1,7 @@
 using System.Globalization;
+using CryptoPortfolioManager.Core.Abstractions;
 using CryptoPortfolioManager.Core.Entities;
+using CryptoPortfolioManager.Core.Services;
 
 namespace CryptoPortfolioManager.Web.Components.Portfolio;
 
@@ -32,11 +34,20 @@ public static class Format
 
     public static string ChainLabel(Chain chain) => ChainInfo.Label(chain);
 
-    public static string WalletTypeLabel(WalletType type) => type switch
-    {
-        WalletType.Cex => "CEX",
-        _ => type.ToString()
-    };
+        public static string WalletTypeLabel(WalletType type) => WalletTypeNames.Label(type);
+
+    /// <summary>
+    /// Whether the re-scan can read this wallet: an on-chain address for a wallet, and a supported exchange (whose API
+    /// then supplies the balances) for an exchange account.
+    /// </summary>
+    public static bool IsScannable(Wallet wallet) => wallet.Type == WalletType.Cex
+        ? ExchangeCatalog.Match(wallet.Source) is not null
+        : BlockchainAddress.DetectFamily(wallet.Address) is not null;
+
+    /// <summary>What a scan of this wallet will read, or why it cannot: shown next to the re-scan button.</summary>
+    public static string ScanSource(Wallet wallet) => wallet.Type == WalletType.Cex
+        ? $"balances come from the {ExchangeCatalog.Match(wallet.Source) ?? wallet.Source} API"
+        : "balances are read on-chain";
 
     /// <summary>CSS modifier for delta coloring.</summary>
     public static string DeltaClass(decimal? fraction) => fraction switch

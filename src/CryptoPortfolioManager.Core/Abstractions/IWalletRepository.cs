@@ -21,11 +21,26 @@ public interface IWalletRepository
     Task UpdateWhitelistedTokenAsync(WhitelistedToken token, string coinGeckoId, CancellationToken ct = default);
     Task DeleteWhitelistedTokenAsync(int id, CancellationToken ct = default);
 
-    /// <summary>
-    /// Stores the result of one wallet scan: a positive balance creates or updates the position, a zero balance removes it,
-    /// and positions of tokens that are no longer whitelisted are removed. Tokens without a balance (read failed) are untouched.
+        /// <summary>
+    /// Stores the result of one on-chain wallet scan: a positive balance creates or updates the position, a zero balance
+    /// removes it, and positions of tokens that are no longer whitelisted are removed. Tokens without a balance (read
+    /// failed) are untouched.
+    /// <paramref name="exchangeHoldings"/> is applied in the same transaction, so a wallet can be read on-chain and on
+    /// an exchange in one go (an empty list leaves exchange positions untouched).
     /// </summary>
-    Task<PositionChanges> ApplyScanAsync(int walletId, IReadOnlyCollection<TokenBalance> balances, string? error, DateTime nowUtc, CancellationToken ct = default);
+    Task<PositionChanges> ApplyScanAsync(
+        int walletId, IReadOnlyCollection<TokenBalance> balances, string? error, DateTime nowUtc,
+        IReadOnlyCollection<ExchangePosition> exchangeHoldings, CancellationToken ct = default);
+
+    /// <summary>
+    /// An exchange account whose balances come from the exchange's API.
+    /// <paramref name="holdings"/> is the <em>complete</em> set of non-zero holdings the exchange reported: a whitelisted
+    /// asset that is absent has a zero balance and its position is removed. Symbols are matched case-insensitively with
+    /// the whitelist; an asset the portfolio does not know yet is created using the exchange's ticker, so the holding is
+    /// visible per wallet even before it is whitelisted.
+    /// </summary>
+    Task<PositionChanges> ApplyExchangeScanAsync(
+        int walletId, IReadOnlyCollection<ExchangePosition> holdings, string? error, DateTime nowUtc, CancellationToken ct = default);
 
     /// <summary>
     /// Removes every position that no wallet owns (manual, exchange or legacy rows) so the scan result is the current view.
@@ -39,3 +54,4 @@ public interface IWalletRepository
     /// <summary>Newest-first history of added, changed and removed positions.</summary>
     Task<IReadOnlyList<PositionChangeLog>> GetChangeLogAsync(int take, CancellationToken ct = default);
 }
+

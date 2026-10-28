@@ -5,6 +5,7 @@ using CryptoPortfolioManager.Core.Services;
 using CryptoPortfolioManager.Infrastructure;
 using CryptoPortfolioManager.Infrastructure.Blockchain;
 using CryptoPortfolioManager.Infrastructure.CoinGecko;
+using CryptoPortfolioManager.Infrastructure.Exchanges;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -27,11 +28,16 @@ public class DependencyInjectionTests
         services.AddLogging();
         services.AddCore();
         services.AddInfrastructure("Data Source=:memory:");
-        services.AddCoinGeckoPriceProvider(config);
+                services.AddCoinGeckoPriceProvider(config);
         services.AddBlockchainBalanceReaders(config);
+        services.AddExchangeBalanceReaders(config);
 
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
         using var scope = provider.CreateScope();
+
+        // One reader per supported exchange; the scan picks the one whose name matches a wallet's source.
+        var exchanges = scope.ServiceProvider.GetServices<IExchangeBalanceReader>().ToList();
+        Assert.Equal(ExchangeCatalog.All.Order(), exchanges.Select(e => e.Name).Order());
 
         Assert.IsType<PriceSyncService>(scope.ServiceProvider.GetRequiredService<IPriceSyncService>());
         Assert.IsType<WalletScanService>(scope.ServiceProvider.GetRequiredService<IWalletScanService>());
