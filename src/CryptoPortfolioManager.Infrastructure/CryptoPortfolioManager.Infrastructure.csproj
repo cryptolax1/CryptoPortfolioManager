@@ -14,10 +14,15 @@
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.13" />
   </ItemGroup>
 
-  <PropertyGroup>
+    <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The signing helper is internal but its exact behaviour is covered by the exchange client tests. -->
+    <InternalsVisibleTo Include="CryptoPortfolioManager.Tests" />
+  </ItemGroup>
 
 </Project>

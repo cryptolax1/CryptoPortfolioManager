@@ -62,11 +62,32 @@ public class ExchangeReaderTests
         var request = Assert.Single(handler.Requests);
         Assert.Equal("https://api.bitvavo.com/v2/balance", request.RequestUri!.ToString());
         Assert.Equal("my-key", request.Headers.GetValues("Bitvavo-Access-Key").Single());
+        Assert.Equal(64, request.Headers.GetValues("Bitvavo-Access-Signature").Single().Length);
 
-        // The documented signature: hex HMAC-SHA256 of "GET /v2/balance" with the secret.
-        var expected = Convert.ToHexStringLower(System.Security.Cryptography.HMACSHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes("my-secret"), System.Text.Encoding.UTF8.GetBytes("GET /v2/balance")));
-        Assert.Equal(expected, request.Headers.GetValues("Bitvavo-Access-Signature").Single());
+        // The text that is signed is timestamp + "GET" + "/v2" + "/balance" + "" (Bitvavo's reference client). Signing
+        // "GET /v2/balance" without the timestamp is what Bitvavo answers with errorCode 309, so the format is pinned
+        // here rather than only in a hash (a random timestamp makes a full hash comparison test the test, not the code).
+        var timestamp = request.Headers.GetValues("Bitvavo-Access-Timestamp").Single();
+        Assert.StartsWith(timestamp, BitvavoExchangeReader.SignedText(timestamp, "GET", "/balance", ""), StringComparison.Ordinal);
+        Assert.Equal("10000", request.Headers.GetValues("Bitvavo-Access-Window").Single()); // milliseconds window, as in the reference client
+    }
+
+    [Fact]
+    public void SignedText_IsTimestampThenMethodThenVersionedPath()
+    {
+        // Bitvavo's reference client signs str(ts) + method + "/v2" + endpoint + body. The order matters: the live API
+        // returns errorCode 309 for "GET /v2/balance" and 200 for the text below (verified against api.bitvavo.com).
+        Assert.Equal("1793229513191GET/v2/balance", BitvavoExchangeReader.SignedText("1793229513191", "GET", "/balance", ""));
+    }
+
+    [Fact]
+    public void SignHex_MatchesTheStandardHmacVector()
+    {
+        // RFC 4231 test case 2: secret "Jefe", message "what do ya want for nothing?".
+        var credentials = new ExchangeCredentials("Bitvavo", "key", "Jefe");
+
+        Assert.Equal("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+            credentials.SignHex("what do ya want for nothing?"));
     }
 
     [Fact]
@@ -87,6 +108,21 @@ public class ExchangeReaderTests
 
         var ex = await Assert.ThrowsAsync<ExchangeBalanceException>(() => reader.GetBalancesAsync(Ct));
         Assert.Contains("401", ex.Message);
+    }
+
+    [Fact]
+    public async Task Bitvavo_InvalidSignature_Reports309_NotAConfusingPermissionMessage()
+    {
+        // Bitvavo answers 403 for a bad signature (errorCode 309). The message must name the signature and quote Bitvavo,
+        // rather than suggesting the key has no read permission.
+        var (reader, _) = Bitvavo(_ => StubHttpHandler.Json(
+            "{\"errorCode\":309,\"error\":\"The signature is invalid.\"}", 403));
+
+        var ex = await Assert.ThrowsAsync<ExchangeBalanceException>(() => reader.GetBalancesAsync(Ct));
+        Assert.Contains("signature", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("309", ex.Message);
+        Assert.Contains("The signature is invalid.", ex.Message);
+        Assert.DoesNotContain("read permission", ex.Message);
     }
 
     private static (CryptoComExchangeReader Reader, StubHttpHandler Handler) CryptoCom(Func<HttpRequestMessage, HttpResponseMessage> respond, bool withKeys = true)
