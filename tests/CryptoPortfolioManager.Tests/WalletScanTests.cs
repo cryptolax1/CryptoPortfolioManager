@@ -399,8 +399,8 @@ public class WalletScanTests
         Assert.Equal(2, await check.PositionChangeLogs.CountAsync(l => l.Reason == "Exchange scan" && l.ChangeType == PositionChangeType.Removed, Ct));
     }
 
-    [Fact]
-    public async Task Scan_Exchange_ShowsHoldingsThatAreNotWhitelisted_WithoutIncludingThemInTheTotal()
+        [Fact]
+    public async Task Scan_Exchange_OnlyWhitelistedHoldings_AreShown()
     {
         await using var f = await Fixture.CreateAsync(defaults: false);
         Assert.True((await f.Wallets.AddAsync(new WalletInput("", "Bitvavo", WalletType.Cex, "Bitvavo"), Ct)).Ok);
@@ -411,19 +411,340 @@ public class WalletScanTests
         var result = await f.Scan.ScanAsync(Ct);
 
         Assert.Empty(result.Errors);
-        var positions = await f.PositionsAsync();
-        Assert.Equal(2, positions.Count);
 
-        // Whitelisted: a real asset with a chain, so it is priced and counted.
-        var cro = positions.Single(p => p.Asset!.Symbol == "CRO");
+        // Only the whitelisted CRO is shown; the un-whitelisted ETH (and anything else) is not.
+        var cro = Assert.Single(await f.PositionsAsync());
+        Assert.Equal("CRO", cro.Asset!.Symbol);
         Assert.Equal("crypto-com-chain", cro.Asset!.CoinGeckoId);
         Assert.Equal(Chain.Cronos, cro.Chain);
 
-        // Not whitelisted: shown under the wallet, but with no CoinGecko id (so no price) and no chain.
-        var eth = positions.Single(p => p.Asset!.Symbol == "ETH");
-        Assert.Equal(PositionSourceType.Exchange, eth.SourceType);
-        Assert.Null(eth.Chain);
-        Assert.StartsWith("exchange-", eth.Asset!.CoinGeckoId);
+        await using var check = f.Db.CreateContext();
+        Assert.False(await check.Assets.AnyAsync(a => a.Symbol == "ETH", Ct));
+    }
+
+                [Fact]
+    public async Task Scan_Exchange_ShowsFiatEuro_ShownAsEur_ButPricedThroughEuroCoin()
+    {
+        // Bitvavo's /v2/balance also lists an EUR cash deposit. It is shown as EUR (the exchange's ticker), while the
+        // price comes from the real CoinGecko coin "euro-coin". Other un-whitelisted coins are not shown at all.
+        await using var f = await Fixture.CreateAsync(defaults: false);
+        Assert.True((await f.Wallets.AddAsync(new WalletInput("", "Bitvavo", WalletType.Cex, "Bitvavo"), Ct)).Ok);
+
+        f.Exchange.Holdings.Add(new ExchangePosition("EUR", "EUR", ExchangePosition.PlaceholderId("EUR"), null, null, 1234.56m));
+        f.Exchange.Holdings.Add(new ExchangePosition("BTC", "BTC", ExchangePosition.PlaceholderId("BTC"), null, null, 0.5m));
+        var result = await f.Scan.ScanAsync(Ct);
+
+        Assert.Empty(result.Errors);
+        var position = Assert.Single(await f.PositionsAsync());
+
+        // Shown as EUR, but priced through euro-coin.
+        Assert.Equal("EUR", position.Asset!.Symbol);
+        Assert.Equal("EUR", position.Asset!.Name);
+        Assert.Equal("euro-coin", position.Asset!.CoinGeckoId);
+        Assert.Equal(PositionSourceType.Exchange, position.SourceType);
+        Assert.Null(position.Chain);
+        Assert.Equal(1234.56m, position.Quantity);
+
+        // The un-whitelisted BTC holding is not shown.
+        await using var check = f.Db.CreateContext();
+        Assert.False(await check.Assets.AnyAsync(a => a.Symbol == "BTC", Ct));
+    }
+
+    [Fact]
+    public async Task Scan_Exchange_ExistingEurPlaceholder_IsRepricedInPlace_InsteadOfDuplicated()
+    {
+        await using var f = await Fixture.CreateAsync(defaults: false);
+        Assert.True((await f.Wallets.AddAsync(new WalletInput("", "Bitvavo", WalletType.Cex, "Bitvavo"), Ct)).Ok);
+
+        // Simulate a scan from before this change: EUR was stored as a price-less "exchange-eur" asset with a position.
+        int placeholderAssetId;
+        await using (var ctx = f.Db.CreateContext())
+        {
+            var placeholder = new Asset { Name = "EUR", Symbol = "EUR", CoinGeckoId = ExchangePosition.PlaceholderId("EUR") };
+            ctx.Assets.Add(placeholder);
+            await ctx.SaveChangesAsync(Ct);
+            placeholderAssetId = placeholder.Id;
+
+            var walletId = (await ctx.Wallets.SingleAsync(Ct)).Id;
+            ctx.Positions.Add(new Position
+            {
+                AssetId = placeholderAssetId, WalletOrExchangeName = "Bitvavo", SourceType = PositionSourceType.Exchange,
+                Chain = null, WalletAddress = null, Quantity = 100m, WalletId = walletId
+            });
+            await ctx.SaveChangesAsync(Ct);
+        }
+
+        // The next scan sees the EUR balance and must re-price that exact asset rather than add a second one.
+        f.Exchange.Holdings.Add(new ExchangePosition("EUR", "EUR", ExchangePosition.PlaceholderId("EUR"), null, null, 100m));
+        var result = await f.Scan.ScanAsync(Ct);
+
+        Assert.Equal(new PositionChanges(0, 0, 0), result.Changes); // same asset, same quantity: nothing to add or drop
+        var position = Assert.Single(await f.PositionsAsync());
+        Assert.Equal(placeholderAssetId, position.AssetId); // the placeholder row was adopted, not duplicated
+        Assert.Equal("euro-coin", position.Asset!.CoinGeckoId);
+
+                await using var check = f.Db.CreateContext();
+                Assert.Equal(1, await check.Assets.CountAsync(Ct)); // no orphan placeholder left behind
+    }
+
+            [Fact]
+    public async Task Scan_Exchange_Rescan_RepricesEuro_AndDropsUnwhitelistedSei()
+    {
+        // Mirrors a real database from before this change: both an "exchange-eur" and an "exchange-sei" placeholder
+        // asset exist with a position. On the next scan EUR must become priceable (euro-coin, still shown as EUR) while
+        // SEI, not being whitelisted, is removed from the view.
+        await using var f = await Fixture.CreateAsync(defaults: false);
+        Assert.True((await f.Wallets.AddAsync(new WalletInput("", "Bitvavo", WalletType.Cex, "Bitvavo"), Ct)).Ok);
+
+        await using (var ctx = f.Db.CreateContext())
+        {
+            var walletId = (await ctx.Wallets.SingleAsync(Ct)).Id;
+            var eur = new Asset { Name = "EUR", Symbol = "EUR", CoinGeckoId = ExchangePosition.PlaceholderId("EUR") };
+            var sei = new Asset { Name = "SEI", Symbol = "SEI", CoinGeckoId = ExchangePosition.PlaceholderId("SEI") };
+            ctx.Assets.AddRange(eur, sei);
+            await ctx.SaveChangesAsync(Ct);
+            ctx.Positions.AddRange(
+                new Position { AssetId = eur.Id, WalletOrExchangeName = "Bitvavo", SourceType = PositionSourceType.Exchange, Quantity = 50m, WalletId = walletId },
+                new Position { AssetId = sei.Id, WalletOrExchangeName = "Bitvavo", SourceType = PositionSourceType.Exchange, Quantity = 30m, WalletId = walletId });
+            await ctx.SaveChangesAsync(Ct);
+        }
+
+        // The exchange reports both holdings again on the re-scan.
+        f.Exchange.Holdings.Add(new ExchangePosition("EUR", "EUR", ExchangePosition.PlaceholderId("EUR"), null, null, 50m));
+        f.Exchange.Holdings.Add(new ExchangePosition("SEI", "SEI", ExchangePosition.PlaceholderId("SEI"), null, null, 30m));
+        var result = await f.Scan.ScanAsync(Ct);
+
+        Assert.Equal(1, result.Changes.Removed); // the un-whitelisted SEI position is dropped
+
+        // EUR was re-priced in place: still shown as EUR, now priced through euro-coin.
+        var eurPosition = Assert.Single(await f.PositionsAsync());
+        Assert.Equal("EUR", eurPosition.Asset!.Symbol);
+        Assert.Equal("euro-coin", eurPosition.Asset!.CoinGeckoId);
+    }
+
+            [Fact]
+            public async Task Scan_Exchange_ExistingEurcAsset_IsRenamedToEur_InPlace()
+            {
+                // An earlier build stored the euro as an asset named after its CoinGecko coin ("EURC"). A re-scan must rename
+                // it to the exchange's own ticker (EUR) in place, keeping the same asset and its position - never "EURC".
+                await using var f = await Fixture.CreateAsync(defaults: false);
+                Assert.True((await f.Wallets.AddAsync(new WalletInput("", "Bitvavo", WalletType.Cex, "Bitvavo"), Ct)).Ok);
+
+                int assetId;
+                await using (var ctx = f.Db.CreateContext())
+                {
+                    var eurc = new Asset { Name = "EURC", Symbol = "EURC", CoinGeckoId = "euro-coin" };
+                    ctx.Assets.Add(eurc);
+                    await ctx.SaveChangesAsync(Ct);
+                    assetId = eurc.Id;
+
+                    var walletId = (await ctx.Wallets.SingleAsync(Ct)).Id;
+                    ctx.Positions.Add(new Position
+                    {
+                        AssetId = assetId, WalletOrExchangeName = "Bitvavo", SourceType = PositionSourceType.Exchange,
+                        Chain = null, WalletAddress = null, Quantity = 100m, WalletId = walletId
+                    });
+                    await ctx.SaveChangesAsync(Ct);
+                }
+
+                f.Exchange.Holdings.Add(new ExchangePosition("EUR", "EUR", ExchangePosition.PlaceholderId("EUR"), null, null, 100m));
+                var result = await f.Scan.ScanAsync(Ct);
+
+                Assert.Equal(new PositionChanges(0, 0, 0), result.Changes); // same asset, same quantity
+                var position = Assert.Single(await f.PositionsAsync());
+                Assert.Equal(assetId, position.AssetId); // renamed in place, not replaced
+                Assert.Equal("EUR", position.Asset!.Symbol);
+                Assert.Equal("EUR", position.Asset!.Name);
+                Assert.Equal("euro-coin", position.Asset!.CoinGeckoId);
+
+                await using var check = f.Db.CreateContext();
+                Assert.Equal(1, await check.Assets.CountAsync(Ct)); // no second asset named EUR was added
+                Assert.False(await check.Assets.AnyAsync(a => a.Symbol == "EURC", Ct));
+            }
+
+            [Fact]
+            public async Task Scan_Exchange_DoesNotCreateAnAssetForZeroFiatBalance()
+    {
+        // A zero EUR balance is dropped like any other: no euro-coin asset is created for nothing.
+        await using var f = await Fixture.CreateAsync(defaults: false);
+        Assert.True((await f.Wallets.AddAsync(new WalletInput("", "Bitvavo", WalletType.Cex, "Bitvavo"), Ct)).Ok);
+
+        f.Exchange.Holdings.Add(new ExchangePosition("EUR", "EUR", ExchangePosition.PlaceholderId("EUR"), null, null, 0m));
+        await f.Scan.ScanAsync(Ct);
+
+                Assert.Empty(await f.PositionsAsync());
+        await using var check = f.Db.CreateContext();
+        Assert.False(await check.Assets.AnyAsync(a => a.CoinGeckoId == "euro-coin", Ct));
+    }
+
+    [Fact]
+    public async Task Scan_Exchange_StrayFiatWhitelistRow_IsHidden_AndDoesNotDuplicateEur()
+    {
+        // EUR cash is an internal scan mechanic, but an old database may still carry a manual "EUR" whitelist entry.
+        // It must not appear in the whitelist and must not create a second EUR position next to the fiat one.
+        await using var f = await Fixture.CreateAsync(defaults: false);
+        Assert.True((await f.Wallets.AddAsync(new WalletInput("", "Bitvavo", WalletType.Cex, "Bitvavo"), Ct)).Ok);
+
+        await using (var ctx = f.Db.CreateContext())
+        {
+            var asset = new Asset { Name = "EUR", Symbol = "EUR", CoinGeckoId = "euro-coin" };
+            ctx.Assets.Add(asset);
+            await ctx.SaveChangesAsync(Ct);
+            ctx.WhitelistedTokens.Add(new WhitelistedToken
+            {
+                Name = "EUR", Symbol = "EUR", Chain = Chain.Exchange, ContractAddress = null, Decimals = 18, AssetId = asset.Id
+            });
+            await ctx.SaveChangesAsync(Ct);
+        }
+
+        // The stray fiat entry is not shown in the whitelist.
+        Assert.Empty(await f.Whitelist.GetAsync(Ct));
+
+        f.Exchange.Holdings.Add(new ExchangePosition("EUR", "EUR", ExchangePosition.PlaceholderId("EUR"), null, null, 100m));
+        await f.Scan.ScanAsync(Ct);
+
+        // Exactly one EUR position, from the fiat path, priced through euro-coin.
+        var position = Assert.Single(await f.PositionsAsync());
+        Assert.Equal("EUR", position.Asset!.Symbol);
+        Assert.Equal("euro-coin", position.Asset!.CoinGeckoId);
+        Assert.Equal(100m, position.Quantity);
+    }
+
+
+    // ---- exchange tokens: whitelisted by ticker, instead of by chain + contract ------------------------------------
+
+    private static WhitelistedTokenInput ExchangeToken(string name, string symbol, string coinGeckoId) =>
+        new(name, symbol, Chain.Exchange, null, 18, coinGeckoId);
+
+    [Fact]
+    public async Task Scan_Exchange_TickerWhitelistedAsExchange_IsTrackedWithoutAChain()
+    {
+        await using var f = await Fixture.CreateAsync(defaults: false);
+        Assert.True((await f.Wallets.AddAsync(new WalletInput("", "Bitvavo", WalletType.Cex, "Bitvavo"), Ct)).Ok);
+
+        // The exchange does not report a chain, so the token is whitelisted by ticker only.
+        Assert.True((await f.Whitelist.AddAsync(ExchangeToken("Sei", "SEI", "sei-network"), Ct)).Ok);
+
+        f.Exchange.Holdings.Add(new ExchangePosition("SEI", "SEI", ExchangePosition.PlaceholderId("SEI"), null, null, 984.93m));
+        var result = await f.Scan.ScanAsync(Ct);
+
+        Assert.Empty(result.Errors);
+        var sei = Assert.Single(await f.PositionsAsync());
+        Assert.Equal("sei-network", sei.Asset!.CoinGeckoId); // a real asset, so the price sync can price it
+        Assert.Equal(PositionSourceType.Exchange, sei.SourceType);
+        Assert.Null(sei.Chain); // an exchange holding has no chain
+        Assert.Null(sei.WalletAddress);
+        Assert.Equal(984.93m, sei.Quantity);
+    }
+
+            [Fact]
+    public async Task Scan_Exchange_UnwhitelistedHoldingAppearsOnlyOnceWhitelisted()
+    {
+        await using var f = await Fixture.CreateAsync(defaults: false);
+        Assert.True((await f.Wallets.AddAsync(new WalletInput("", "Bitvavo", WalletType.Cex, "Bitvavo"), Ct)).Ok);
+
+        // First scan without a whitelist: the SEI holding is not shown at all (and no asset is created for it).
+        f.Exchange.Holdings.Add(new ExchangePosition("SEI", "SEI", ExchangePosition.PlaceholderId("SEI"), null, null, 100m));
+        await f.Scan.ScanAsync(Ct);
+
+        Assert.Empty(await f.PositionsAsync());
+        await using (var ctx = f.Db.CreateContext())
+            Assert.False(await ctx.Assets.AnyAsync(a => a.Symbol == "SEI", Ct));
+
+        // Whitelisting the ticker makes it show up on the next scan, once.
+        Assert.True((await f.Whitelist.AddAsync(ExchangeToken("Sei", "SEI", "sei-network"), Ct)).Ok);
+        var result = await f.Scan.ScanAsync(Ct);
+
+        Assert.Equal(new PositionChanges(1, 0, 0), result.Changes);
+        var after = Assert.Single(await f.PositionsAsync());
+        Assert.Equal("sei-network", after.Asset!.CoinGeckoId);
+        Assert.Equal(100m, after.Quantity);
+        Assert.Null(after.Chain);
+    }
+
+    [Fact]
+    public async Task Scan_Exchange_PlaceholderAssetIsNotAdoptedForAnOnChainTokenWithTheSameTicker()
+    {
+        await using var f = await Fixture.CreateAsync(defaults: false);
+
+        // An unpriced holding created the placeholder "exchange-xrp" although a real XRP asset is not tracked yet.
+        await using (var ctx = f.Db.CreateContext())
+        {
+            ctx.Assets.Add(new Asset { Name = "XRP", Symbol = "XRP", CoinGeckoId = ExchangePosition.PlaceholderId("XRP") });
+            await ctx.SaveChangesAsync(Ct);
+        }
+
+        // Whitelisting the on-chain token with the same ticker must not hijack that placeholder.
+        Assert.True((await f.Whitelist.AddAsync(new WhitelistedTokenInput("XRP", "XRP", Chain.XrpLedger, null, 6, "ripple"), Ct)).Ok);
+
+        await using var check = f.Db.CreateContext();
+        Assert.Equal("ripple", (await check.Assets.SingleAsync(a => a.CoinGeckoId == "ripple", Ct)).CoinGeckoId);
+        Assert.True(await check.Assets.AnyAsync(a => a.CoinGeckoId == ExchangePosition.PlaceholderId("XRP"), Ct));
+    }
+
+    [Fact]
+    public async Task Scan_Exchange_WhitelistedPerChainTickerBeatsTheSameTickerAsExchangeToken()
+    {
+        await using var f = await Fixture.CreateAsync(defaults: false);
+        Assert.True((await f.Wallets.AddAsync(new WalletInput("", "Bitvavo", WalletType.Cex, "Bitvavo"), Ct)).Ok);
+        Assert.True((await f.Whitelist.AddAsync(ExchangeToken("Ripple", "XRP", "ripple"), Ct)).Ok);
+
+        f.Exchange.Holdings.Add(new ExchangePosition("XRP", "XRP", ExchangePosition.PlaceholderId("XRP"), null, null, 3454.83m));
+        await f.Scan.ScanAsync(Ct);
+
+        // One position for the ticker, not an extra price-less one next to it.
+        var position = Assert.Single(await f.PositionsAsync());
+        Assert.Equal("ripple", position.Asset!.CoinGeckoId);
+        Assert.Null(position.Chain);
+    }
+
+    [Fact]
+    public void ExchangeToken_IsWhitelistedByTickerWithoutAnAddress()
+    {
+        // The whitelist form offers this chain; it has no node and no address format.
+        Assert.Equal("Exchange (ticker)", ChainInfo.Label(Chain.Exchange));
+
+        // No contract address is valid (or needed) there, and a made-up one is refused.
+        Assert.True(BlockchainAddress.IsValidTokenAddress(Chain.Exchange, null));
+        Assert.False(BlockchainAddress.IsValidTokenAddress(Chain.Exchange, "0x1234567890abcdef1234567890abcdef12345678"));
+        Assert.Contains("ticker", BlockchainAddress.TokenAddressHint(Chain.Exchange));
+    }
+
+    [Fact]
+    public async Task Whitelist_ExchangeToken_TakesTheTickerAndIgnoresAnAddress()
+    {
+        await using var f = await Fixture.CreateAsync(defaults: false);
+
+        // No RPC node is needed for an exchange, and an exchange token is never matched by address.
+        var result = await f.Whitelist.AddAsync(ExchangeToken("Sei", "SEI", "sei-network") with
+        {
+            ContractAddress = "0x1234567890abcdef1234567890abcdef12345678"
+        }, Ct);
+        Assert.True(result.Ok, result.Error);
+
+        var token = Assert.Single(await f.Whitelist.GetAsync(Ct));
+        Assert.Equal(Chain.Exchange, token.Chain);
+        Assert.Null(token.ContractAddress);
+
+        // Same ticker twice on "Exchange" would be the same position, so it is refused.
+        Assert.Contains("already whitelisted", (await f.Whitelist.AddAsync(ExchangeToken("Sei v2", "sei", "sei-v2"), Ct)).Error);
+
+                // An on-chain token with the same ticker is a different position and stays allowed.
+        Assert.True((await f.Whitelist.AddAsync(
+            new WhitelistedTokenInput("Sei on Cronos", "SEI", Chain.Cronos, "0x0000000000000000000000000000000000000abc", 18, "sei-network-cronos"), Ct)).Ok);
+    }
+
+    [Fact]
+    public async Task Whitelist_RejectsFiatAsAnExchangeToken()
+    {
+        await using var f = await Fixture.CreateAsync(defaults: false);
+
+        // EUR is priced and shown by the exchange scan itself; it is not something the user whitelists.
+        var result = await f.Whitelist.AddAsync(ExchangeToken("Euro", "EUR", "euro-coin"), Ct);
+        Assert.False(result.Ok);
+        Assert.Contains("fiat", result.Error);
+
+        Assert.Empty(await f.Whitelist.GetAsync(Ct));
     }
 
     [Fact]

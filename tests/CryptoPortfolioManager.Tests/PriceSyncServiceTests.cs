@@ -341,6 +341,47 @@ public class PriceSyncServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PlaceholderAssets_OfUnwhitelistedHoldings_AreNeverRequested()
+    {
+        // An exchange holding that was not whitelisted has a made-up "exchange-…" id, not a CoinGecko id. Requesting it
+        // would only produce "could not find exchange-sei" errors for a coin the user does not track.
+        await using (var db = _db.CreateContext())
+        {
+            db.Assets.Add(new Asset { Name = "SEI", Symbol = "SEI", CoinGeckoId = ExchangePosition.PlaceholderId("SEI") });
+            await db.SaveChangesAsync();
+        }
+
+        var result = await _sync.SyncAsync();
+
+        Assert.Equal(PriceUpdateStatus.Succeeded, result.Status);
+        Assert.Empty(result.Issues);
+        // Only the two real coins are requested, never the placeholder.
+        Assert.DoesNotContain(_provider.CurrentCalls.SelectMany(c => c), id => id.StartsWith("exchange-", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(["bitcoin", "ethereum"], _provider.CurrentCalls[0].Order());
+        Assert.DoesNotContain(_provider.HistoryCalls, c => c.Id.StartsWith("exchange-", StringComparison.OrdinalIgnoreCase));
+    }
+
+        [Fact]
+    public async Task FiatEuro_IsPricedThroughEuroCoin()
+    {
+        // EUR cash from an exchange is stored with the real CoinGecko id "euro-coin" (shown as EUR), so it is priced
+        // like any coin.
+        await using (var db = _db.CreateContext())
+        {
+            db.Assets.Add(new Asset { Name = "EUR", Symbol = "EUR", CoinGeckoId = "euro-coin" });
+            await db.SaveChangesAsync();
+        }
+        _provider.Current["euro-coin"] = new PriceQuote(1.08m, Now);
+        _provider.History["euro-coin"] = DailyHistory(1.05m);
+
+        var result = await _sync.SyncAsync();
+
+        Assert.Equal(PriceUpdateStatus.Succeeded, result.Status);
+        Assert.Contains("euro-coin", _provider.CurrentCalls[0]);
+        Assert.Single(await SnapshotsAsync("euro-coin"), s => s.PriceUsd == 1.08m);
+    }
+
+    [Fact]
     public void DetermineHistoryStart_CoversNewRecentAndGapCases()
     {
         var required = new DateTime(2025, 12, 31, 0, 0, 0, DateTimeKind.Utc);

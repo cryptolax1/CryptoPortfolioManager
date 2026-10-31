@@ -34,6 +34,13 @@ public static class Format
 
     public static string ChainLabel(Chain chain) => ChainInfo.Label(chain);
 
+    /// <summary>
+    /// The chain of a position. A position read from an exchange has no chain (the exchange does not report one), which
+    /// is shown as such instead of leaving the cell empty.
+    /// </summary>
+    public static string PositionChain(PositionSourceType sourceType, Chain? chain) =>
+        chain is { } value ? ChainName(value) : sourceType == PositionSourceType.Exchange ? "exchange" : Empty;
+
         public static string WalletTypeLabel(WalletType type) => WalletTypeNames.Label(type);
 
     /// <summary>

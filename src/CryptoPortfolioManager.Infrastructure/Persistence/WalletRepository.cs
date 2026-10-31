@@ -63,12 +63,22 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
         await db.Wallets.Where(w => w.Id == id).ExecuteDeleteAsync(ct);
     }
 
-    public async Task<IReadOnlyList<WhitelistedToken>> GetWhitelistAsync(CancellationToken ct = default)
+        public async Task<IReadOnlyList<WhitelistedToken>> GetWhitelistAsync(CancellationToken ct = default)
     {
         await using var db = await factory.CreateDbContextAsync(ct);
-        return await db.WhitelistedTokens.AsNoTracking().Include(t => t.Asset)
+        var tokens = await db.WhitelistedTokens.AsNoTracking().Include(t => t.Asset)
             .OrderBy(t => t.Chain).ThenBy(t => t.Symbol).ThenBy(t => t.Id).ToListAsync(ct);
+        // Fiat cash (EUR) is an internal scan mechanic, never a token the user whitelists. A stray row from an older
+        // database is hidden here, so it never shows up in the whitelist and never takes part in whitelist validation.
+        return tokens.Where(t => !IsFiatToken(t)).ToList();
     }
+
+    /// <summary>
+    /// Whether a whitelist entry actually represents fiat cash rather than a token the user chose: its symbol is a
+    /// known fiat currency, or its asset was priced as one. Such an entry is never shown or edited on the whitelist.
+    /// </summary>
+    private static bool IsFiatToken(WhitelistedToken token) =>
+        FiatCurrencies.IsFiat(token.Symbol) || FiatCurrencies.IsFiatAssetId(token.Asset?.CoinGeckoId);
 
     public async Task<WhitelistedToken> AddWhitelistedTokenAsync(WhitelistedToken token, string coinGeckoId, CancellationToken ct = default)
     {
@@ -81,7 +91,7 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
 
     public async Task UpdateWhitelistedTokenAsync(WhitelistedToken token, string coinGeckoId, CancellationToken ct = default)
     {
-        await using var db = await factory.CreateDbContextAsync(ct);
+                await using var db = await factory.CreateDbContextAsync(ct);
         var stored = await db.WhitelistedTokens.Include(t => t.Asset).SingleOrDefaultAsync(t => t.Id == token.Id, ct)
             ?? throw new InvalidOperationException($"Whitelisted token {token.Id} does not exist.");
 
@@ -91,7 +101,11 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
         {
             // The CoinGecko id is an editable attribute, not the key: rename the asset in place so
             // its positions, price history and other references follow automatically.
-            asset = stored.Asset!;
+            //
+            // Whitelisting an exchange ticker is how the price-less asset the scan made for it (id "exchange-sei")
+            // becomes the real coin: adopt that row instead of leaving an orphan next to the new asset.
+            var placeholder = await FindPlaceholderAssetAsync(db, token, ct);
+            asset = placeholder is not null && placeholder.Id != stored.AssetId ? placeholder : stored.Asset!;
             asset.CoinGeckoId = coinGeckoId;
             asset.Name = token.Name;
             asset.Symbol = token.Symbol;
@@ -235,7 +249,7 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
         return changes;
     }
 
-        /// <summary>
+                /// <summary>
     /// The exchange half of a scan, working on an already-loaded context and wallet. It never saves: the caller does,
     /// so an on-chain scan and an exchange scan that share a context end up in a single transaction. New positions are
     /// added to <paramref name="db"/> and to <paramref name="positions"/>, so a later part of the same scan sees them.
@@ -266,17 +280,23 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
         int added = 0, updated = 0, removed = 0;
         const string reason = "Exchange scan";
 
-        // Tokens the user tracks: the whitelist decides what an exchange balance is called and how it is priced.
-        // A ticker whitelisted on several chains (USDC on Cronos and on BNB Smart Chain) is reported once by the
-        // exchange, so the whole quantity goes to the first chain of the group and the rest is untouched. This keeps
-        // one quantity per asset per exchange for the portfolio total.
+                        // Tokens the user tracks: the whitelist decides what an exchange balance is called and how it is priced.
+        // A chain is kept on the position only when it is a real blockchain; a token whitelisted as "Exchange" is
+        // matched by its ticker and has no chain, because the exchange does not report one.
+        // A ticker whitelisted more than once (USDC on Cronos and on BNB Smart Chain) is reported once by the
+        // exchange, so the whole quantity goes to the first entry of the group and the others are left untouched. That
+                // keeps one quantity per asset per exchange for the portfolio total.
         var tracked = tokens
-            .GroupBy(t => t.Symbol, StringComparer.OrdinalIgnoreCase)
+            // Fiat cash (EUR) is handled below through the fiat path, never through the whitelist, even if an old
+            // database still has a stray fiat entry - otherwise it would create a second EUR position.
+            .Where(t => !FiatCurrencies.IsFiat(t.Symbol))
+            .GroupBy(t => t.Symbol.Trim(), StringComparer.OrdinalIgnoreCase)
             .Select(g => (Token: g.OrderBy(t => t.Id).First(), Quantity: bySymbol.GetValueOrDefault(g.Key, 0m)))
             .ToList();
 
         foreach (var (token, quantity) in tracked)
         {
+            var chain = token.Chain == Chain.Exchange ? (Chain?)null : token.Chain;
             var position = positions.FirstOrDefault(p =>
                 p.AssetId == token.AssetId && p.SourceType == PositionSourceType.Exchange);
 
@@ -284,10 +304,10 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
             {
                 if (position is null)
                 {
-                    var created = new Position
+                                                            var created = new Position
                     {
                         AssetId = token.AssetId, Asset = token.Asset, WalletOrExchangeName = wallet.Name,
-                        SourceType = PositionSourceType.Exchange, Chain = token.Chain, WalletAddress = null,
+                        SourceType = PositionSourceType.Exchange, Chain = chain, WalletAddress = null,
                         Quantity = quantity, WalletId = wallet.Id,
                         LastSyncedAtUtc = nowUtc, CreatedAtUtc = nowUtc, UpdatedAtUtc = nowUtc
                     };
@@ -301,10 +321,10 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
                     if (position.Quantity != quantity)
                     {
                         LogChange(db, position, PositionChangeType.Updated, position.Quantity, quantity, reason, nowUtc);
-                        updated++;
+                                                updated++;
                     }
                     position.Quantity = quantity;
-                    position.Chain = token.Chain;
+                    position.Chain = chain;
                     position.WalletOrExchangeName = wallet.Name;
                     position.LastSyncedAtUtc = nowUtc;
                     position.UpdatedAtUtc = nowUtc;
@@ -319,28 +339,36 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
             }
         }
 
-        // Holdings the portfolio does not track yet: their own asset, no chain and a made-up CoinGecko id (the
-        // exchange only knows its own ticker). Without a price they do not count towards the portfolio value, but they
-        // do show up per wallet, so it is clear what the exchange holds.
-        //
-        // The assets are resolved first, without saving, so a position can reference an asset that is still new.
+                        // Holdings the portfolio does not track yet. An exchange reports every coin the account holds, but an exchange
+        // wallet only shows what the user whitelisted, plus fiat cash (EUR): that is priced through CoinGecko so the
+        // cash counts, while any other un-whitelisted coin is simply ignored (it can be whitelisted later).
+        var whitelistedSymbols = tokens
+            // A stray fiat whitelist entry must not stop the fiat path below from handling the EUR balance.
+            .Where(t => !FiatCurrencies.IsFiat(t.Symbol))
+            .Select(t => t.Symbol.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var untracked = holdings
-            .Where(h => !tokens.Any(t => string.Equals(t.Symbol, h.Symbol, StringComparison.OrdinalIgnoreCase)))
+            .Where(h => !whitelistedSymbols.Contains(h.Symbol.Trim()) && FiatCurrencies.IsFiat(h.Symbol))
             .GroupBy(h => h.Symbol.Trim(), StringComparer.OrdinalIgnoreCase)
             .Select(g => (Holding: g.First(), Quantity: g.Sum(h => h.Quantity)))
-            .ToList();
+            // A holding with no balance needs no position and, just as importantly, no asset: resolving the asset first
+            // would otherwise create an asset that nothing points at.
+            .Where(x => x.Quantity > 0)
+                        .ToList();
 
         var untrackedAssets = new Dictionary<string, Asset>(StringComparer.OrdinalIgnoreCase);
         foreach (var (holding, _) in untracked)
-            untrackedAssets[holding.Symbol] = await FindOrCreateExchangeAssetAsync(db, holding, ct);
+            untrackedAssets[holding.Symbol] = await FindOrCreateFiatAssetAsync(db, holding, ct);
 
         foreach (var (holding, quantity) in untracked)
         {
-            if (quantity <= 0) continue;
-
             var asset = untrackedAssets[holding.Symbol];
+            // New assets are not saved until the end of the scan, so several of them share Id 0 within this loop. Match
+            // an existing position by the asset instance for those (a position created earlier in this same loop holds
+            // the same instance), and by Id for assets that were already stored.
             var position = positions.FirstOrDefault(p =>
-                p.SourceType == PositionSourceType.Exchange && p.Chain == null && p.AssetId == asset.Id);
+                p.SourceType == PositionSourceType.Exchange && p.Chain == null &&
+                (ReferenceEquals(p.Asset, asset) || (asset.Id != 0 && p.AssetId == asset.Id)));
 
             if (position is null)
             {
@@ -370,27 +398,69 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
             }
         }
 
+        // An un-whitelisted coin no longer shows up on an exchange wallet. A position that an earlier scan created for
+        // one (a price-less "exchange-<ticker>" placeholder) is therefore dropped - unless it is fiat cash, which stays.
+        foreach (var stale in positions.Where(p =>
+                     p.SourceType == PositionSourceType.Exchange &&
+                     ExchangePosition.IsPlaceholderId(p.Asset?.CoinGeckoId) &&
+                     !FiatCurrencies.IsFiat(p.Asset?.Symbol)).ToList())
+        {
+            LogChange(db, stale, PositionChangeType.Removed, stale.Quantity, null, reason, nowUtc);
+            db.Positions.Remove(stale);
+            positions.Remove(stale);
+            removed++;
+        }
+
         return new PositionChanges(added, updated, removed);
     }
 
-    /// <summary>
-    /// The asset behind an exchange holding that is not whitelisted. A ticker that is already known is reused (so a
-    /// coin that is whitelisted on one chain is not created twice), otherwise a new asset is added. The CoinGecko id of
-    /// a new asset is the exchange's own ticker, which no other asset has, so the unique index stays satisfied. It is
-    /// not a real CoinGecko id, so the asset simply has no price until it is whitelisted; it then keeps its id and the
-    /// positions follow it, because they are linked by <see cref="Asset.Id"/>.
+                        /// <summary>
+    /// The priced asset for a fiat holding of an exchange (EUR cash). The holding is shown with the exchange's own
+    /// ticker (EUR), but it must get a price, so it is mapped to a real CoinGecko coin ("euro-coin").
+    /// A price-less "exchange-eur" placeholder from an earlier scan is adopted in place, so the existing position and
+    /// its history are re-priced instead of being duplicated. Only fiat reaches this method; other un-whitelisted
+    /// holdings are never turned into an asset.
     /// </summary>
-    private static async Task<Asset> FindOrCreateExchangeAssetAsync(AppDbContext db, ExchangePosition holding, CancellationToken ct)
+        private static async Task<Asset> FindOrCreateFiatAssetAsync(AppDbContext db, ExchangePosition holding, CancellationToken ct)
     {
         var symbol = holding.Symbol.Trim();
+        var fiatId = FiatCurrencies.CoinGeckoIdFor(symbol)!;
 
-        var asset = await db.Assets.FirstOrDefaultAsync(a => a.Symbol == symbol, ct)
-                    ?? db.Assets.Local.FirstOrDefault(a => string.Equals(a.Symbol, symbol, StringComparison.OrdinalIgnoreCase));
-        if (asset is not null) return asset;
+        // The holding is shown with the exchange's own ticker (EUR), not the coin it is priced through: the real
+        // CoinGecko id ("euro-coin") only exists so the holding gets a price. An asset created by an earlier scan may
+        // still carry the coin's own name ("EURC"), so it is renamed in place to keep a single, consistently named EUR.
+        var fiat = await db.Assets.FirstOrDefaultAsync(a => a.CoinGeckoId == fiatId, ct)
+            ?? db.Assets.Local.FirstOrDefault(a => a.CoinGeckoId == fiatId);
+        if (fiat is not null)
+        {
+            if (fiat.Name != symbol || fiat.Symbol != symbol)
+            {
+                fiat.Name = symbol;
+                fiat.Symbol = symbol;
+            }
+            return fiat;
+        }
 
-        asset = new Asset { Name = holding.AssetName, Symbol = symbol, CoinGeckoId = $"exchange-{symbol.ToLowerInvariant()}" };
-        db.Assets.Add(asset);
-        return asset;
+        // Earlier scans stored this fiat as a price-less placeholder ("exchange-eur"). Adopt that row and give it the
+        // real CoinGecko id, so the existing position and its history are re-priced instead of being duplicated.
+        var placeholderId = ExchangePosition.PlaceholderId(symbol);
+        var placeholder = await db.Assets.FirstOrDefaultAsync(a => a.CoinGeckoId == placeholderId, ct)
+            ?? db.Assets.Local.FirstOrDefault(a => a.CoinGeckoId == placeholderId);
+
+        if (placeholder is null)
+        {
+            fiat = new Asset { Name = symbol, Symbol = symbol, CoinGeckoId = fiatId };
+            db.Assets.Add(fiat);
+        }
+        else
+        {
+            fiat = placeholder;
+            fiat.CoinGeckoId = fiatId;
+            fiat.Name = symbol;
+            fiat.Symbol = symbol;
+        }
+
+        return fiat;
     }
 
     private static async Task RemoveScannedPositionsAsync(AppDbContext db, WhitelistedToken token, CancellationToken ct)
@@ -445,14 +515,40 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
         return await db.PositionChangeLogs.AsNoTracking().OrderByDescending(l => l.Id).Take(take).ToListAsync(ct);
     }
 
+            /// <summary>
+    /// The asset for a new whitelist entry, by its CoinGecko id. When the id is new but the scan already made a
+    /// price-less asset for this exchange ticker (id <c>exchange-sei</c>), that row is given the real id instead, so the
+    /// holding keeps its position and history and no orphan is left behind.
+    /// </summary>
     private static async Task<Asset> FindOrCreateAssetAsync(AppDbContext db, WhitelistedToken token, string coinGeckoId, CancellationToken ct)
     {
         var asset = await db.Assets.SingleOrDefaultAsync(a => a.CoinGeckoId == coinGeckoId, ct);
         if (asset is not null) return asset;
 
-                asset = new Asset { Name = token.Name, Symbol = token.Symbol, CoinGeckoId = coinGeckoId };
+        asset = await FindPlaceholderAssetAsync(db, token, ct);
+        if (asset is not null)
+        {
+            asset.CoinGeckoId = coinGeckoId;
+            asset.Name = token.Name;
+            asset.Symbol = token.Symbol;
+            return asset;
+        }
+
+        asset = new Asset { Name = token.Name, Symbol = token.Symbol, CoinGeckoId = coinGeckoId };
         db.Assets.Add(asset);
         return asset;
+    }
+
+    /// <summary>
+    /// The price-less asset an exchange scan created for a ticker, if any. Only exchange tokens adopt one: an on-chain
+    /// token with the same ticker is a different coin, so it gets its own asset.
+    /// </summary>
+    private static async Task<Asset?> FindPlaceholderAssetAsync(AppDbContext db, WhitelistedToken token, CancellationToken ct)
+    {
+        if (token.Chain != Chain.Exchange) return null;
+
+        var placeholderId = ExchangePosition.PlaceholderId(token.Symbol);
+        return await db.Assets.SingleOrDefaultAsync(a => a.CoinGeckoId == placeholderId, ct);
     }
 
     /// <summary>

@@ -156,7 +156,7 @@ public sealed class BitvavoExchangeReader(
                 var quantity = ReadDecimal(entry, "available") + ReadDecimal(entry, "inOrder");
                 if (quantity <= 0m) continue;
 
-                holdings.Add(new ExchangePosition(symbol, symbol, $"exchange-{symbol.ToLowerInvariant()}", null, null, quantity));
+                holdings.Add(new ExchangePosition(symbol, symbol, ExchangePosition.PlaceholderId(symbol), null, null, quantity));
             }
 
             logger.LogInformation("{Exchange}: read {Count} non-zero holdings", Name, holdings.Count);

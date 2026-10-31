@@ -171,6 +171,11 @@ dus de prijs van het actief. Een coin die je nog niet whitelist is, verschijnt w
 van de beurs (zonder prijs), zodat je ziet wat er in de account zit. Overige instellingen (basiswaarten, timeout) staan
 in `appsettings.json` onder `Exchange`.
 
+Een beurs meldt geen blockchain, dus voor zo'n coin kies je bij het whitelisten als **Blockchain** de optie
+**Exchange (ticker)**: je vult alleen het symbool en de CoinGecko-id in (geen tokenadres, geen RPC-node nodig). De
+balans wordt dan op **ticker** gekoppeld en de positie krijgt geen chain. Whitelist je zo'n ticker pas later, dan krijgt
+het prijsloze actief dat de scan eerder aanmaakte de echte CoinGecko-id en blijven positie en historie behouden.
+
 ### Gebruikte endpoints
 
 Basis-URL `https://api.coingecko.com/api/v3/`, header `x-cg-demo-api-key` (de key staat niet in de URL).

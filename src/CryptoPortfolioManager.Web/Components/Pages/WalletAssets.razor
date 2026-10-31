@@ -102,7 +102,7 @@ else
                             <tr>
                                                                 <td class="name">@p.Asset?.Name</td>
                                 <td>@p.Asset?.Symbol</td>
-                                <td>@(p.SourceType == PositionSourceType.Exchange ? "exchange" : Format.ChainName(p.Chain))</td>
+                                <td>@Format.PositionChain(p.SourceType, p.Chain)</td>
                                 <td class="num">@Format.Quantity(p.Quantity)</td>
                                 <td class="num">@Format.Usd(price)</td>
                                 <td class="num">@Format.Usd(price * p.Quantity)</td>

@@ -18,7 +18,14 @@ public record PositionLine(
     Chain? Chain,
     string? WalletAddress,
     decimal Quantity,
-    decimal? ValueUsd);
+    decimal? ValueUsd)
+{
+    /// <summary>
+    /// Where the quantity comes from. An exchange position normally has no chain; this tells it apart from an empty
+    /// chain in the user interface.
+    /// </summary>
+    public PositionSourceType SourceType { get; init; } = PositionSourceType.Manual;
+}
 
 /// <summary>One main row of the overview: an asset with totals aggregated from its positions.</summary>
 public record AssetOverview(

@@ -20,7 +20,14 @@ public enum Chain
     XrpLedger,
     Sui,
     Cardano,
-    Stellar
+    Stellar,
+
+    /// <summary>
+    /// Not a blockchain: a token held on a centralized exchange, whitelisted by ticker instead of by contract. A holding
+    /// from an exchange API is matched with these by symbol and its position gets no chain (the exchange reports none).
+    /// No wallet address is ever read on this "chain".
+    /// </summary>
+    Exchange
 }
 
 /// <summary>Chains of one family share an address format and a node protocol.</summary>
@@ -32,7 +39,10 @@ public enum ChainFamily
     XrpLedger,
     Sui,
     Cardano,
-    Stellar
+    Stellar,
+
+    /// <summary>A centralized exchange: balances come from its API, by ticker, not from an address.</summary>
+    Exchange
 }
 
 public static class ChainInfo
@@ -41,6 +51,8 @@ public static class ChainInfo
     {
         Chain.Bitcoin => ChainFamily.Bitcoin,
         Chain.Solana => ChainFamily.Solana,
+        // No address is ever read for an exchange token; it must never fall through to an EVM node either.
+        Chain.Exchange => ChainFamily.Exchange,
         Chain.XrpLedger => ChainFamily.XrpLedger,
         Chain.Sui => ChainFamily.Sui,
         Chain.Cardano => ChainFamily.Cardano,
@@ -52,6 +64,7 @@ public static class ChainInfo
     {
         Chain.BnbSmartChain => "BNB Smart Chain",
         Chain.XrpLedger => "XRP Ledger",
+        Chain.Exchange => "Exchange (ticker)",
         _ => chain.ToString()
     };
 }

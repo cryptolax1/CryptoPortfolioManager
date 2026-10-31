@@ -13,7 +13,54 @@ public sealed record ExchangePosition(
     string CoinGeckoId,
     Chain? Chain,
     string? ContractAddress,
-    decimal Quantity);
+    decimal Quantity)
+{
+    /// <summary>
+    /// The CoinGecko id of an asset that only an exchange holding knows about (e.g. <c>exchange-sei</c>): a ticker,
+    /// not a CoinGecko id, so the asset has no price. Whitelisting the ticker gives the asset its real id instead.
+    /// </summary>
+    public const string PlaceholderIdPrefix = "exchange-";
+
+    public static string PlaceholderId(string symbol) => PlaceholderIdPrefix + symbol.Trim().ToLowerInvariant();
+
+    public static bool IsPlaceholderId(string? coinGeckoId) =>
+        coinGeckoId is not null && coinGeckoId.StartsWith(PlaceholderIdPrefix, StringComparison.OrdinalIgnoreCase);
+}
+
+/// <summary>
+/// Fiat currencies an exchange reports next to the crypto balances. They are cash, not tokens, but a user still wants
+/// to see them under the exchange wallet. The balance endpoints of Bitvavo and Crypto.com list them (e.g. an EUR
+/// deposit) with the same symbol/available shape as a coin. Unlike other un-whitelisted holdings, fiat cash is always
+/// shown on an exchange wallet: it is mapped to a real CoinGecko asset (EUR to "euro-coin") purely so it gets a price,
+/// while the wallet keeps showing it under the exchange's own ticker (EUR). Only currencies with a known CoinGecko id
+/// are listed; an unmapped fiat ticker is treated like any other un-whitelisted coin and is not shown.
+/// </summary>
+public static class FiatCurrencies
+{
+    /// <summary>
+    /// Fiat tickers mapped to the CoinGecko id of their closest priced coin. Compared case-insensitively, so "eur",
+    /// "EUR" and " Eur " match. EUR is priced through EURC, a euro-backed stablecoin, because CoinGecko has no price for
+    /// the euro itself; the value tracks 1:1 closely enough to count in the portfolio total.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> CoinGeckoIds { get; } =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["EUR"] = "euro-coin",
+        };
+
+    /// <summary>The CoinGecko id that prices a fiat ticker, or null when the fiat currency has no mapped coin.</summary>
+    public static string? CoinGeckoIdFor(string? symbol) =>
+        symbol is not null && CoinGeckoIds.TryGetValue(symbol.Trim(), out var id) ? id : null;
+
+    public static bool IsFiat(string? symbol) => CoinGeckoIdFor(symbol) is not null;
+
+    /// <summary>
+    /// Whether a CoinGecko id is one a fiat currency is priced through (e.g. "euro-coin"). Used to recognise the asset a
+    /// fiat holding created, so it is never mistaken for a token the user whitelisted.
+    /// </summary>
+    public static bool IsFiatAssetId(string? coinGeckoId) =>
+        coinGeckoId is not null && CoinGeckoIds.Values.Any(id => string.Equals(id, coinGeckoId.Trim(), StringComparison.OrdinalIgnoreCase));
+}
 
 /// <summary>
 /// Reads the balances of an exchange account through the exchange's own private, key-authenticated REST API.

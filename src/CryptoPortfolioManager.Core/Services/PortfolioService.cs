@@ -34,7 +34,10 @@ public class PortfolioService(IPortfolioRepository repository, TimeProvider cloc
                 t => CalculateDelta(price, FindReferencePrice(snapshots, t.Value)));
 
             var positions = asset.Positions
-                .Select(p => new PositionLine(p.Id, p.WalletOrExchangeName, p.Chain, p.WalletAddress, p.Quantity, p.Quantity * price))
+                .Select(p => new PositionLine(p.Id, p.WalletOrExchangeName, p.Chain, p.WalletAddress, p.Quantity, p.Quantity * price)
+                {
+                    SourceType = p.SourceType
+                })
                 .OrderBy(p => p.WalletOrExchangeName, StringComparer.CurrentCultureIgnoreCase)
                 .ToList();
 

@@ -108,7 +108,7 @@ public sealed class CryptoComExchangeReader(
 
             logger.LogInformation("{Exchange}: read {Count} non-zero holdings", Name, totals.Count);
             return totals
-                .Select(t => new ExchangePosition(t.Key, t.Key, $"exchange-{t.Key.ToLowerInvariant()}", null, null, t.Value))
+                .Select(t => new ExchangePosition(t.Key, t.Key, ExchangePosition.PlaceholderId(t.Key), null, null, t.Value))
                 .ToList();
         }
     }

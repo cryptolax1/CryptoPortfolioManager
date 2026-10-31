@@ -170,7 +170,10 @@ public static partial class BlockchainAddress
         return CurrencyCode().IsMatch(currency) && IsXrpLedgerAccount(issuer);
     }
 
-    /// <summary>Validates a token address for the chain; the native coin (null) is always valid.</summary>
+        /// <summary>
+    /// Validates a token address for the chain; the native coin (null) is always valid. An exchange token has no address
+    /// at all: it is matched by ticker, so only an empty address is valid there.
+    /// </summary>
     public static bool IsValidTokenAddress(Chain chain, string? address) => address is null || ChainInfo.FamilyOf(chain) switch
     {
         ChainFamily.Evm => EvmAddress.IsValid(address),
@@ -190,6 +193,7 @@ public static partial class BlockchainAddress
         ChainFamily.Cardano => "policyId.assetNameHex (the policy ID is 56 hexadecimal characters)",
         ChainFamily.Stellar => "CODE:issuer, for example USDC:GXXXX…",
         ChainFamily.Bitcoin => "none: Bitcoin has only its native coin",
+        ChainFamily.Exchange => "none: an exchange token is matched by its ticker, not by an address",
         _ => "0x followed by 40 hexadecimal characters"
     };
 

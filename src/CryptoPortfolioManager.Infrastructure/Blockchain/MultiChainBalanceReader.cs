@@ -21,8 +21,10 @@ public sealed class MultiChainBalanceReader(
         ChainFamily.Solana => solana,
         ChainFamily.Bitcoin => bitcoin,
         ChainFamily.Sui => sui,
-        ChainFamily.Cardano => cardano,
+                ChainFamily.Cardano => cardano,
         ChainFamily.Stellar => stellar,
+        // An exchange has no node to read; its balances come from the exchange API.
+        ChainFamily.Exchange => null,
         _ => null
     };
 }

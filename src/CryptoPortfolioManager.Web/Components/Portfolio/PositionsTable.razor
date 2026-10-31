@@ -15,7 +15,7 @@
         {
             <tr @key="p.PositionId">
                 <td>@p.WalletOrExchangeName</td>
-                <td>@Format.ChainName(p.Chain)</td>
+                <td>@Format.PositionChain(p.SourceType, p.Chain)</td>
                 <td class="mono" title="@p.WalletAddress">@Format.ShortAddress(p.WalletAddress)</td>
                 <td class="num">@Format.Quantity(p.Quantity)</td>
                 <td class="num">@Format.Usd(p.ValueUsd)</td>

@@ -81,6 +81,36 @@ public class ExchangeReaderTests
     }
 
     [Fact]
+    public async Task Bitvavo_FiatBalance_IsReportedAsAHolding()
+    {
+        // /v2/balance lists a fiat deposit (EUR) in the same shape as a coin. It must still be reported: the user wants
+        // to see the cash under the exchange wallet. The repository keeps it shown as EUR and prices it via "euro-coin".
+        const string body = """
+            [
+              { "symbol": "EUR", "available": "1234.56", "inOrder": "0" },
+              { "symbol": "BTC", "available": "1.5", "inOrder": "0" }
+            ]
+            """;
+        var (reader, _) = Bitvavo(_ => StubHttpHandler.Json(body));
+
+        var holdings = await reader.GetBalancesAsync(Ct);
+
+        Assert.Equal(2, holdings.Count);
+        Assert.Equal(1234.56m, holdings.Single(h => h.Symbol == "EUR").Quantity);
+    }
+
+    [Fact]
+    public void FiatCurrencies_MapsEurToEuroCoin_AndNotCryptoTickers()
+    {
+        Assert.Equal("euro-coin", FiatCurrencies.CoinGeckoIdFor("EUR"));
+        Assert.Equal("euro-coin", FiatCurrencies.CoinGeckoIdFor(" eur "));
+        Assert.True(FiatCurrencies.IsFiat("EUR"));
+        Assert.Null(FiatCurrencies.CoinGeckoIdFor("BTC"));
+        Assert.False(FiatCurrencies.IsFiat("CRO"));
+        Assert.False(FiatCurrencies.IsFiat(null));
+    }
+
+    [Fact]
     public void SignHex_MatchesTheStandardHmacVector()
     {
         // RFC 4231 test case 2: secret "Jefe", message "what do ya want for nothing?".
@@ -179,6 +209,29 @@ public class ExchangeReaderTests
 
         var ex = await Assert.ThrowsAsync<ExchangeBalanceException>(() => reader.GetBalancesAsync(Ct));
         Assert.Contains("unexpected response", ex.Message);
+    }
+
+    [Fact]
+    public async Task CryptoCom_FiatWallet_IsReportedAsAHolding()
+    {
+        // The App lists its fixed fiat wallets among the accounts; they are still shown (as EUR, priced via euro-coin).
+        const string body = """
+            {
+              "code": 0,
+              "result": {
+                "data": [
+                  { "currency": "EUR", "balance": "500" },
+                  { "currency": "CRO", "balance": "10" }
+                ]
+              }
+            }
+            """;
+        var (reader, _) = CryptoCom(_ => StubHttpHandler.Json(body));
+
+        var holdings = await reader.GetBalancesAsync(Ct);
+
+        Assert.Equal(2, holdings.Count);
+        Assert.Equal(500m, holdings.Single(h => h.Symbol == "EUR").Quantity);
     }
 
     [Fact]

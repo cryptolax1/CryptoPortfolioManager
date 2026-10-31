@@ -81,7 +81,12 @@ public class PriceSyncService(
         var source = provider.SourceName;
         var issues = new List<string>();
 
-        var assets = (await repository.GetAssetsAsync(ct)).Where(a => !string.IsNullOrWhiteSpace(a.CoinGeckoId)).ToList();
+                // Only assets with a real CoinGecko id can be priced. An exchange holding that was not whitelisted has a made-up
+                // placeholder id ("exchange-sei") that CoinGecko does not know: requesting it only produces a "not found" error,
+                // so it is skipped. Fiat cash (EUR) is mapped to "euro-coin", a real id, so it is priced normally.
+                var assets = (await repository.GetAssetsAsync(ct))
+                    .Where(a => !string.IsNullOrWhiteSpace(a.CoinGeckoId) && !ExchangePosition.IsPlaceholderId(a.CoinGeckoId))
+                    .ToList();
         if (assets.Count == 0)
             return new PriceSyncResult(PriceUpdateStatus.Succeeded, 0, 0, 0, []);
 
