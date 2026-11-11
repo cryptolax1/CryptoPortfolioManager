@@ -53,6 +53,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
             e.HasIndex(p => p.AssetId);
             e.HasIndex(p => p.WalletId);
+            e.HasIndex(p => new { p.WalletId, p.AssetId }).IsUnique()
+                .HasFilter("\"SourceType\" = 'Manual' AND \"WalletId\" IS NOT NULL");
 
             // Positions read from a wallet are derived data: they go away with the wallet.
             e.HasOne(p => p.Wallet).WithMany(w => w.Positions)
@@ -73,7 +75,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.Property(w => w.Type).HasConversion<string>().HasMaxLength(30);
             e.Property(w => w.LastScanError).HasMaxLength(4000);
 
-            e.HasIndex(w => w.Address).IsUnique();
+            e.HasIndex(w => w.Address).IsUnique().HasFilter("\"Address\" <> ''");
         });
 
         modelBuilder.Entity<WhitelistedToken>(e =>

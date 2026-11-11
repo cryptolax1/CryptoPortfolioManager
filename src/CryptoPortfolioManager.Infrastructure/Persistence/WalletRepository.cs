@@ -11,7 +11,13 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
     public async Task<IReadOnlyList<Wallet>> GetWalletsAsync(CancellationToken ct = default)
     {
         await using var db = await factory.CreateDbContextAsync(ct);
-        return await db.Wallets.AsNoTracking().OrderBy(w => w.Name).ThenBy(w => w.Id).ToListAsync(ct);
+        return await db.Wallets.AsNoTracking().Where(w => !w.IsArchived).OrderBy(w => w.Name).ThenBy(w => w.Id).ToListAsync(ct);
+    }
+
+    public async Task<IReadOnlyList<Wallet>> GetArchivedWalletsAsync(CancellationToken ct = default)
+    {
+        await using var db = await factory.CreateDbContextAsync(ct);
+        return await db.Wallets.AsNoTracking().Where(w => w.IsArchived).OrderBy(w => w.Name).ThenBy(w => w.Id).ToListAsync(ct);
     }
 
     public async Task<Wallet> AddWalletAsync(Wallet wallet, CancellationToken ct = default)
@@ -27,7 +33,7 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
     {
         await using var db = await factory.CreateDbContextAsync(ct);
         var stored = await db.Wallets.Include(w => w.Positions).ThenInclude(p => p.Asset)
-            .SingleOrDefaultAsync(w => w.Id == wallet.Id, ct)
+            .SingleOrDefaultAsync(w => w.Id == wallet.Id && !w.IsArchived, ct)
             ?? throw new InvalidOperationException($"Wallet {wallet.Id} does not exist.");
 
                 // Positions were read with other settings (an old address, another exchange, or the wallet can no longer be
@@ -35,7 +41,7 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
         // Changing only the name keeps them (renamed below).
         var addressChanged = !string.Equals(stored.Address, wallet.Address, StringComparison.Ordinal);
         var sourceChanged = !string.Equals(stored.Source, wallet.Source, StringComparison.OrdinalIgnoreCase);
-        var noLongerScannable = !IsScannable(wallet);
+        var noLongerScannable = wallet.Type != WalletType.Manual && !IsScannable(wallet);
         if (addressChanged || (sourceChanged && wallet.Type == WalletType.Cex) || noLongerScannable)
         {
             RemoveWithLog(db, stored.Positions, "Wallet changed", DateTime.UtcNow);
@@ -54,13 +60,72 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
         await db.SaveChangesAsync(ct);
     }
 
-    public async Task DeleteWalletAsync(int id, CancellationToken ct = default)
+    public async Task<ServiceResult> ArchiveWalletAsync(int id, CancellationToken ct = default)
     {
         await using var db = await factory.CreateDbContextAsync(ct);
-        var positions = await db.Positions.Include(p => p.Asset).Where(p => p.WalletId == id).ToListAsync(ct);
-        RemoveWithLog(db, positions, "Wallet deleted", DateTime.UtcNow);
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        var wallet = await db.Wallets.Include(w => w.Positions).SingleOrDefaultAsync(w => w.Id == id && !w.IsArchived, ct);
+        if (wallet is null) return ServiceResult.Fail("This wallet no longer exists or is already deleted.");
+
+        var prices = await db.PriceSnapshots.AsNoTracking()
+            .Where(s => s.TimestampUtc == db.PriceSnapshots.Where(o => o.AssetId == s.AssetId).Max(o => o.TimestampUtc))
+            .ToListAsync(ct);
+        var latest = prices.GroupBy(p => p.AssetId).ToDictionary(g => g.Key, g => g.First().PriceUsd);
+        if (wallet.Positions.Any(p => p.Quantity > 0 && !latest.ContainsKey(p.AssetId)))
+            return ServiceResult.Fail("Cannot delete: all nonzero holdings must have a price. Update prices first.");
+
+        var total = wallet.Positions.Sum(p => p.Quantity * latest.GetValueOrDefault(p.AssetId));
+        if (total >= 10m) return ServiceResult.Fail("Cannot delete: the wallet value must be less than $10.");
+
+        wallet.IsArchived = true;
         await db.SaveChangesAsync(ct);
-        await db.Wallets.Where(w => w.Id == id).ExecuteDeleteAsync(ct);
+        await transaction.CommitAsync(ct);
+        return ServiceResult.Success;
+    }
+
+    public async Task<ServiceResult> RestoreWalletAsync(int id, CancellationToken ct = default)
+    {
+        await using var db = await factory.CreateDbContextAsync(ct);
+        var wallet = await db.Wallets.SingleOrDefaultAsync(w => w.Id == id && w.IsArchived, ct);
+        if (wallet is null) return ServiceResult.Fail("This deleted wallet no longer exists.");
+        wallet.IsArchived = false;
+        await db.SaveChangesAsync(ct);
+        return ServiceResult.Success;
+    }
+
+    public async Task<ServiceResult> SetManualQuantityAsync(int walletId, int assetId, decimal quantity, DateTime nowUtc, CancellationToken ct = default)
+    {
+        if (quantity < 0) return ServiceResult.Fail("Quantity cannot be negative.");
+        await using var db = await factory.CreateDbContextAsync(ct);
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        var wallet = await db.Wallets.SingleOrDefaultAsync(w => w.Id == walletId && !w.IsArchived && w.Type == WalletType.Manual, ct);
+        if (wallet is null) return ServiceResult.Fail("This manual wallet no longer exists.");
+        var position = await db.Positions.Include(p => p.Asset)
+            .SingleOrDefaultAsync(p => p.WalletId == walletId && p.AssetId == assetId && p.SourceType == PositionSourceType.Manual, ct);
+        if (position is null)
+        {
+            var tokens = await db.WhitelistedTokens.Include(t => t.Asset).Where(t => t.AssetId == assetId).ToListAsync(ct);
+            var token = tokens.FirstOrDefault(t => !IsFiatToken(t));
+            if (token?.Asset is null) return ServiceResult.Fail("Choose a whitelisted asset.");
+            position = new Position
+            {
+                AssetId = assetId, Asset = token.Asset, WalletId = wallet.Id, WalletOrExchangeName = wallet.Name,
+                SourceType = PositionSourceType.Manual, Quantity = quantity,
+                CreatedAtUtc = nowUtc, UpdatedAtUtc = nowUtc, LastQuantityChangedAtUtc = nowUtc
+            };
+            db.Positions.Add(position);
+            LogChange(db, position, PositionChangeType.Added, null, quantity, "Manual entry", nowUtc);
+        }
+        else if (position.Quantity != quantity)
+        {
+            LogChange(db, position, PositionChangeType.Updated, position.Quantity, quantity, "Manual entry", nowUtc);
+            position.Quantity = quantity;
+            position.LastQuantityChangedAtUtc = nowUtc;
+            position.UpdatedAtUtc = nowUtc;
+        }
+        await db.SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
+        return ServiceResult.Success;
     }
 
         public async Task<IReadOnlyList<WhitelistedToken>> GetWhitelistAsync(CancellationToken ct = default)
@@ -153,7 +218,7 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
         IReadOnlyCollection<ExchangePosition> exchangeHoldings, CancellationToken ct = default)
     {
         await using var db = await factory.CreateDbContextAsync(ct);
-        var wallet = await db.Wallets.SingleOrDefaultAsync(w => w.Id == walletId, ct);
+        var wallet = await db.Wallets.SingleOrDefaultAsync(w => w.Id == walletId && !w.IsArchived && w.Type != WalletType.Manual, ct);
         if (wallet is null) return new PositionChanges(0, 0, 0); // deleted while the scan was running
 
                 // One statement per scan: the exchange holdings and the on-chain balances are all saved together at the end of
@@ -234,7 +299,7 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
         int walletId, IReadOnlyCollection<ExchangePosition> holdings, string? error, DateTime nowUtc, CancellationToken ct = default)
     {
         await using var db = await factory.CreateDbContextAsync(ct);
-        var wallet = await db.Wallets.SingleOrDefaultAsync(w => w.Id == walletId, ct);
+        var wallet = await db.Wallets.SingleOrDefaultAsync(w => w.Id == walletId && !w.IsArchived && w.Type == WalletType.Cex, ct);
         if (wallet is null) return new PositionChanges(0, 0, 0); // deleted while the scan was running
 
         var tokens = await db.WhitelistedTokens.Include(t => t.Asset).ToListAsync(ct);
@@ -466,7 +531,8 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
     private static async Task RemoveScannedPositionsAsync(AppDbContext db, WhitelistedToken token, CancellationToken ct)
     {
         var positions = await db.Positions.Include(p => p.Asset)
-            .Where(p => p.WalletId != null && p.AssetId == token.AssetId && p.Chain == token.Chain)
+            .Where(p => p.WalletId != null && !p.Wallet!.IsArchived && p.SourceType != PositionSourceType.Manual
+                        && p.AssetId == token.AssetId && p.Chain == token.Chain)
             .ToListAsync(ct);
         RemoveWithLog(db, positions, "Token removed from whitelist", DateTime.UtcNow);
     }
@@ -486,7 +552,7 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
         db.PositionChangeLogs.Add(new PositionChangeLog
         {
             OccurredAtUtc = nowUtc, ChangeType = type, Reason = reason,
-            AssetId = position.AssetId, AssetSymbol = position.Asset?.Symbol ?? "?", AssetName = position.Asset?.Name ?? "?",
+            AssetId = position.AssetId, WalletId = position.WalletId, AssetSymbol = position.Asset?.Symbol ?? "?", AssetName = position.Asset?.Name ?? "?",
             WalletOrExchangeName = position.WalletOrExchangeName, Chain = position.Chain, WalletAddress = position.WalletAddress,
             PreviousQuantity = previous, NewQuantity = now
         });
@@ -504,7 +570,7 @@ public class WalletRepository(IDbContextFactory<AppDbContext> factory) : IWallet
     {
         await using var db = await factory.CreateDbContextAsync(ct);
         var positions = await db.Positions.AsNoTracking().Include(p => p.Asset)
-            .Where(p => p.WalletId != null).ToListAsync(ct);
+            .Where(p => p.WalletId != null && !p.Wallet!.IsArchived).ToListAsync(ct);
         return positions.OrderBy(p => p.Asset!.Symbol).ThenBy(p => p.Chain).ThenBy(p => p.Id).ToList();
     }
 

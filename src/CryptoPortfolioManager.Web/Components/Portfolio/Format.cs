@@ -16,11 +16,16 @@ public static class Format
     public static string Timestamp(DateTime utc) =>
         DateTime.SpecifyKind(utc, DateTimeKind.Utc).ToLocalTime().ToString("g", Culture);
 
+    public static string PreciseTimestamp(DateTime utc) =>
+        DateTime.SpecifyKind(utc, DateTimeKind.Utc).ToLocalTime().ToString("G", Culture);
+
     public static string Usd(decimal? value) => value is null
         ? Empty
         : "$ " + value.Value.ToString(Math.Abs(value.Value) < 1m ? "#,##0.00######" : "#,##0.00", Culture);
 
     public static string Quantity(decimal value) => value.ToString("#,##0.########", Culture);
+
+    public static string ExactQuantity(decimal value) => value.ToString("#,##0.############################", Culture);
 
     public static string Percent(decimal? fraction) => fraction is null
         ? Empty
@@ -47,7 +52,7 @@ public static class Format
     /// Whether the re-scan can read this wallet: an on-chain address for a wallet, and a supported exchange (whose API
     /// then supplies the balances) for an exchange account.
     /// </summary>
-    public static bool IsScannable(Wallet wallet) => wallet.Type == WalletType.Cex
+    public static bool IsScannable(Wallet wallet) => wallet.Type == WalletType.Manual ? false : wallet.Type == WalletType.Cex
         ? ExchangeCatalog.Match(wallet.Source) is not null
         : BlockchainAddress.DetectFamily(wallet.Address) is not null;
 

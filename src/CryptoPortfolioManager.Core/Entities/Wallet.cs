@@ -11,7 +11,9 @@ public enum WalletType
     /// read through the exchange's own API. The API is chosen by <see cref="Source"/> (the exchange's name), so the
     /// address stays empty.
     /// </summary>
-        Cex
+        Cex,
+    /// <summary>A wallet whose balances are entered by the user.</summary>
+    Manual
 }
 
 public static class WalletTypeNames
@@ -51,8 +53,9 @@ public class Wallet
     /// <summary>Errors of the most recent scan; null when it succeeded completely.</summary>
     public string? LastScanError { get; set; }
 
+    public bool IsArchived { get; set; }
+
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 
     public List<Position> Positions { get; set; } = [];
 }
-

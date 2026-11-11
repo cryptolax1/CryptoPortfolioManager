@@ -23,6 +23,7 @@ public class PositionChangeLog
 
     /// <summary>Not a foreign key on purpose: the log must outlive the asset.</summary>
     public int AssetId { get; set; }
+    public int? WalletId { get; set; }
     public required string AssetSymbol { get; set; }
     public required string AssetName { get; set; }
 

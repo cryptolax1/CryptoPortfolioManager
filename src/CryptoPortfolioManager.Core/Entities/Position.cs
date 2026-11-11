@@ -40,6 +40,9 @@ public class Position
     /// <summary>When the quantity was last read automatically; null for manual positions.</summary>
     public DateTime? LastSyncedAtUtc { get; set; }
 
+    /// <summary>When a manual quantity was last changed.</summary>
+    public DateTime? LastQuantityChangedAtUtc { get; set; }
+
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 }

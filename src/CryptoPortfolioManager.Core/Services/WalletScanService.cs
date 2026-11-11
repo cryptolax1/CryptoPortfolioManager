@@ -78,6 +78,12 @@ public class WalletScanService(
 
                         foreach (var wallet in wallets)
             {
+                            if (wallet.Type == WalletType.Manual)
+                            {
+                                if (onlyWalletId is not null)
+                                    errors.Add($"{wallet.Name}: manual wallets cannot be scanned.");
+                                continue;
+                            }
                 // An exchange account is read through the exchange's own API, not from an address.
                 if (wallet.Type == WalletType.Cex)
                 {

@@ -11,7 +11,7 @@
 <PageTitle>Assets per wallet</PageTitle>
 
 <h1>Assets per wallet</h1>
-<p class="muted lead">The assets each wallet held at its last scan. Use <strong>Re-scan</strong> to read a single wallet again; other wallets are not touched.</p>
+<p class="muted lead">The assets held by each wallet, including manually entered balances. Use <strong>Re-scan</strong> to read one scannable wallet again.</p>
 
 @if (loadError is not null)
 {
@@ -46,24 +46,12 @@ else
                 {
                     <span>@Format.ScanSource(wallet)</span>
                 }
-                else
+                else if (wallet.Type != WalletType.Manual)
                 {
                     <span class="mono" title="@wallet.Address">@wallet.Address</span>
                 }
-                ·
-                                @if (!Format.IsScannable(wallet))
-                {
-                    <span>not scanned: @(wallet.Type == WalletType.Cex ? "not a supported exchange" : "no on-chain address")</span>
-                }
-                else if (wallet.LastScanError is not null)
-                {
-                    <span class="delta-neg" title="@wallet.LastScanError">last scan failed</span>
-                    <span>(@(wallet.LastScannedAtUtc is { } ok ? "last ok " + Format.Timestamp(ok) : "never succeeded"))</span>
-                }
-                else
-                {
-                    <span>last scan: @(wallet.LastScannedAtUtc is { } t ? Format.Timestamp(t) : "never")</span>
-                }
+                @if (wallet.Type != WalletType.Manual) { <span> · </span> }
+                <WalletScanStatus Wallet="wallet" ShowLabel="true" />
             </p>
 
             @if (Format.IsScannable(wallet))
@@ -92,7 +80,7 @@ else
                             <th class="num">Quantity</th>
                             <th class="num">Price</th>
                             <th class="num">Value</th>
-                            <th>Last read</th>
+                            <th>@(wallet.Type == WalletType.Manual ? "Last changed" : "Last read")</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -103,10 +91,10 @@ else
                                                                 <td class="name">@p.Asset?.Name</td>
                                 <td>@p.Asset?.Symbol</td>
                                 <td>@Format.PositionChain(p.SourceType, p.Chain)</td>
-                                <td class="num">@Format.Quantity(p.Quantity)</td>
+                                <td class="num">@(wallet.Type == WalletType.Manual ? Format.ExactQuantity(p.Quantity) : Format.Quantity(p.Quantity))</td>
                                 <td class="num">@Format.Usd(price)</td>
                                 <td class="num">@Format.Usd(price * p.Quantity)</td>
-                                <td>@(p.LastSyncedAtUtc is { } s ? Format.Timestamp(s) : "")</td>
+                                <td>@((wallet.Type == WalletType.Manual ? p.LastQuantityChangedAtUtc : p.LastSyncedAtUtc) is { } s ? (wallet.Type == WalletType.Manual ? Format.PreciseTimestamp(s) : Format.Timestamp(s)) : "")</td>
                             </tr>
                         }
                     </tbody>

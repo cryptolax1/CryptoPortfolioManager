@@ -1,0 +1,172 @@
+@using CryptoPortfolioManager.Core.Entities
+@using CryptoPortfolioManager.Core.Services
+@using CryptoPortfolioManager.Web.Components.Portfolio
+@using System.Globalization
+@page "/manual-wallets"
+@inject IWalletService WalletService
+@inject IWhitelistService WhitelistService
+@rendermode InteractiveServer
+
+<PageTitle>Manual wallets</PageTitle>
+<h1>Manual wallets</h1>
+<p class="muted lead">Manage quantities for manual wallets. Removed assets remain here with quantity zero and their history is retained. Add assets to the <a href="/whitelist">whitelist</a> first.</p>
+
+@if (error is not null)
+{
+    <div class="alert">@error</div>
+}
+
+@if (wallets is null)
+{
+    <p class="muted">Loading…</p>
+}
+else if (wallets.Count == 0)
+{
+    <p>No manual wallets yet. Add one on the <a href="/wallets">Wallets</a> page.</p>
+}
+else
+{
+    <label>Wallet
+        <select @bind="selectedWalletId" @bind:after="WalletChanged">
+            @foreach (var wallet in wallets)
+            {
+                <option value="@wallet.Id">@wallet.Name</option>
+            }
+        </select>
+    </label>
+
+    @if (availableAssets.Count > 0)
+    {
+        <form class="form-card" @onsubmit="AddAsync" @onsubmit:preventDefault>
+            <h2>Add asset</h2>
+            <div class="form-grid">
+                <label>Asset
+                    <select @bind="selectedAssetId">
+                        <option value="0">Choose an asset</option>
+                        @foreach (var asset in availableAssets)
+                        {
+                            <option value="@asset.Id">@asset.Name (@asset.Symbol) — @asset.CoinGeckoId</option>
+                        }
+                    </select>
+                </label>
+                <label>Quantity
+                    <input type="number" min="0" step="any" @bind="newQuantity" />
+                </label>
+            </div>
+            <div class="form-actions"><button class="btn" type="submit" disabled="@busy">Add asset</button></div>
+        </form>
+    }
+    else
+    {
+        <p class="muted">No additional whitelisted assets are available.</p>
+    }
+
+    @if (walletPositions.Count == 0)
+    {
+        <p class="muted">No assets in this wallet yet.</p>
+    }
+    else
+    {
+        <table class="data-table">
+            <thead><tr><th>Asset</th><th>Symbol</th><th class="num">Quantity</th><th>Last changed</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var position in walletPositions)
+                {
+                    <tr>
+                        <td>@position.Asset?.Name</td>
+                        <td>@position.Asset?.Symbol</td>
+                        <td class="num">
+                            @if (editingId == position.Id)
+                            {
+                                <input aria-label="Quantity" type="number" min="0" step="any" @bind="editQuantity" />
+                            }
+                            else
+                            {
+                                @Format.ExactQuantity(position.Quantity)
+                            }
+                        </td>
+                        <td>@(position.LastQuantityChangedAtUtc is { } changed ? Format.PreciseTimestamp(changed) : "–")</td>
+                        <td class="row-actions">
+                            @if (editingId == position.Id)
+                            {
+                                <button class="btn btn-small" disabled="@busy" @onclick="() => SetQuantityAsync(position.AssetId, editQuantity)">Save</button>
+                                <button class="btn btn-small btn-secondary" disabled="@busy" @onclick="CancelEdit">Cancel</button>
+                            }
+                            else
+                            {
+                                <button class="btn btn-small btn-secondary" disabled="@busy" @onclick="() => Edit(position)">Edit</button>
+                                <button class="btn btn-small btn-secondary" disabled="@(busy || position.Quantity == 0)" @onclick="() => RemoveAsync(position.AssetId)">Remove</button>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+}
+
+@code {
+    private IReadOnlyList<Wallet>? wallets;
+    private IReadOnlyList<Position> positions = [];
+    private IReadOnlyList<WhitelistedToken> tokens = [];
+    private int selectedWalletId;
+    private int selectedAssetId;
+    private int? editingId;
+    private string newQuantity = "0";
+    private string editQuantity = "0";
+    private bool busy;
+    private string? error;
+
+    private List<Position> walletPositions => positions.Where(p => p.WalletId == selectedWalletId).ToList();
+    private List<Asset> availableAssets => tokens.Where(t => t.Asset is not null && !walletPositions.Any(p => p.AssetId == t.AssetId))
+        .Select(t => t.Asset!).DistinctBy(a => a.Id).OrderBy(a => a.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            wallets = (await WalletService.GetWalletsAsync()).Where(w => w.Type == WalletType.Manual).ToList();
+            positions = await WalletService.GetWalletPositionsAsync();
+            tokens = await WhitelistService.GetAsync();
+            if (!wallets.Any(w => w.Id == selectedWalletId)) selectedWalletId = wallets.FirstOrDefault()?.Id ?? 0;
+            error = null;
+        }
+        catch (Exception ex) { error = $"Could not load manual wallets: {ex.Message}"; }
+    }
+
+    private void WalletChanged()
+    {
+        selectedAssetId = 0;
+        newQuantity = "0";
+        editingId = null;
+        error = null;
+    }
+
+    private void Edit(Position position) { editingId = position.Id; editQuantity = position.Quantity.ToString(CultureInfo.InvariantCulture); }
+    private void CancelEdit() => editingId = null;
+    private Task AddAsync() => SetQuantityAsync(selectedAssetId, newQuantity);
+    private Task RemoveAsync(int assetId) => SetQuantityAsync(assetId, "0");
+
+    private async Task SetQuantityAsync(int assetId, string quantityText)
+    {
+        if (!decimal.TryParse(quantityText, NumberStyles.Float, CultureInfo.InvariantCulture, out var quantity) || quantity < 0)
+        {
+            error = "Enter a valid non-negative quantity.";
+            return;
+        }
+        busy = true;
+        try
+        {
+            var result = await WalletService.SetManualQuantityAsync(selectedWalletId, assetId, quantity);
+            if (!result.Ok) { error = result.Error; return; }
+            editingId = null;
+            selectedAssetId = 0;
+            newQuantity = "0";
+            await LoadAsync();
+        }
+        catch (Exception ex) { error = $"Could not save quantity: {ex.Message}"; }
+        finally { busy = false; }
+    }
+}

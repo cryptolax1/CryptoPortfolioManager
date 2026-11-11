@@ -7,15 +7,19 @@ namespace CryptoPortfolioManager.Core.Services;
 public interface IWalletService
 {
     Task<IReadOnlyList<Wallet>> GetWalletsAsync(CancellationToken ct = default);
+    Task<IReadOnlyList<Wallet>> GetArchivedWalletsAsync(CancellationToken ct = default);
     Task<IReadOnlyList<Position>> GetWalletPositionsAsync(CancellationToken ct = default);
     Task<ServiceResult> AddAsync(WalletInput input, CancellationToken ct = default);
     Task<ServiceResult> UpdateAsync(int id, WalletInput input, CancellationToken ct = default);
-    Task DeleteAsync(int id, CancellationToken ct = default);
+    Task<ServiceResult> DeleteAsync(int id, CancellationToken ct = default);
+    Task<ServiceResult> RestoreAsync(int id, CancellationToken ct = default);
+    Task<ServiceResult> SetManualQuantityAsync(int walletId, int assetId, decimal quantity, CancellationToken ct = default);
 }
 
-public class WalletService(IWalletRepository repository) : IWalletService
+public class WalletService(IWalletRepository repository, WalletScanLock scanLock, TimeProvider clock) : IWalletService
 {
     public Task<IReadOnlyList<Wallet>> GetWalletsAsync(CancellationToken ct = default) => repository.GetWalletsAsync(ct);
+    public Task<IReadOnlyList<Wallet>> GetArchivedWalletsAsync(CancellationToken ct = default) => repository.GetArchivedWalletsAsync(ct);
 
     public Task<IReadOnlyList<Position>> GetWalletPositionsAsync(CancellationToken ct = default) => repository.GetWalletPositionsAsync(ct);
 
@@ -49,7 +53,18 @@ public class WalletService(IWalletRepository repository) : IWalletService
         return ServiceResult.Success;
     }
 
-    public Task DeleteAsync(int id, CancellationToken ct = default) => repository.DeleteWalletAsync(id, ct);
+    public async Task<ServiceResult> DeleteAsync(int id, CancellationToken ct = default)
+    {
+        await scanLock.Semaphore.WaitAsync(ct);
+        try { return await repository.ArchiveWalletAsync(id, ct); }
+        finally { scanLock.Semaphore.Release(); }
+    }
+
+    public Task<ServiceResult> RestoreAsync(int id, CancellationToken ct = default) => repository.RestoreWalletAsync(id, ct);
+
+    public Task<ServiceResult> SetManualQuantityAsync(int walletId, int assetId, decimal quantity, CancellationToken ct = default) =>
+        quantity < 0 ? Task.FromResult(ServiceResult.Fail("Quantity cannot be negative."))
+        : repository.SetManualQuantityAsync(walletId, assetId, quantity, clock.GetUtcNow().UtcDateTime, ct);
 
     private async Task<(WalletInput Clean, string? Error)> ValidateAsync(int? editingId, WalletInput input, CancellationToken ct)
     {
@@ -57,9 +72,9 @@ public class WalletService(IWalletRepository repository) : IWalletService
         // well as in the form) keeps a wallet that was switched to CEX free of a stale address.
         var clean = input with
         {
-            Address = input.Type == WalletType.Cex ? "" : input.Address?.Trim() ?? "",
+            Address = input.Type is WalletType.Cex or WalletType.Manual ? "" : input.Address?.Trim() ?? "",
             Name = input.Name?.Trim() ?? "",
-            Source = input.Source?.Trim() ?? ""
+            Source = input.Type == WalletType.Manual ? "Manual" : input.Source?.Trim() ?? ""
         };
 
         string? error = null;
@@ -69,14 +84,14 @@ public class WalletService(IWalletRepository repository) : IWalletService
         else if (clean.Source.Length > 100) error = "Source can be at most 100 characters.";
         else if (clean.Type == WalletType.Cex && ExchangeCatalog.Match(clean.Source) is null)
             error = $"A CEX is read through the exchange's API, so the source must be one of: {string.Join(", ", ExchangeCatalog.All)}.";
-        else if (clean.Type != WalletType.Cex && clean.Address.Length == 0) error = "Wallet address is required.";
+        else if (clean.Type is not (WalletType.Cex or WalletType.Manual) && clean.Address.Length == 0) error = "Wallet address is required.";
         else if (clean.Address.Length > 120) error = "Wallet address can be at most 120 characters.";
-        else if (clean.Type != WalletType.Cex && BlockchainAddress.DetectFamily(clean.Address) is null)
+        else if (clean.Type is not (WalletType.Cex or WalletType.Manual) && BlockchainAddress.DetectFamily(clean.Address) is null)
             error = "Wallet address is not recognised. Use an EVM (0x…), Bitcoin (bc1… / 3… / 1…), XRP Ledger (r…), Solana, Sui (0x…, 64 hex), Cardano (addr1… / stake1…) or Stellar (G…) address.";
 
         if (error is null && clean.Address.Length > 0)
         {
-            var existing = await repository.GetWalletsAsync(ct);
+            var existing = (await repository.GetWalletsAsync(ct)).Concat(await repository.GetArchivedWalletsAsync(ct));
             if (existing.Any(w => w.Id != editingId && w.Address.Equals(clean.Address, StringComparison.OrdinalIgnoreCase)))
                 error = "A wallet with this address already exists.";
         }
@@ -85,7 +100,7 @@ public class WalletService(IWalletRepository repository) : IWalletService
         {
             // One wallet per exchange account: the API credentials name the account, so a second wallet for the same
             // exchange would read exactly the same balances.
-            var existing = await repository.GetWalletsAsync(ct);
+            var existing = (await repository.GetWalletsAsync(ct)).Concat(await repository.GetArchivedWalletsAsync(ct));
             var exchange = ExchangeCatalog.Match(clean.Source);
             if (existing.Any(w => w.Id != editingId && w.Type == WalletType.Cex &&
                                   string.Equals(ExchangeCatalog.Match(w.Source), exchange, StringComparison.OrdinalIgnoreCase)))
@@ -95,4 +110,3 @@ public class WalletService(IWalletRepository repository) : IWalletService
         return (clean, error);
     }
 }
-

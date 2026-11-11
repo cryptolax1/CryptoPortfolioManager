@@ -266,7 +266,7 @@ public class BitcoinSuiCardanoStellarTests
     public async Task WalletService_AcceptsTheNewAddressFormats(string address)
     {
         await using var db = await TestDatabase.CreateAsync();
-        var service = new WalletService(new WalletRepository(db.CreateFactory()));
+        var service = new WalletService(new WalletRepository(db.CreateFactory()), new WalletScanLock(), TimeProvider.System);
 
         var result = await service.AddAsync(new WalletInput(address, "Cold", WalletType.Cold, "Ledger"), Ct);
 

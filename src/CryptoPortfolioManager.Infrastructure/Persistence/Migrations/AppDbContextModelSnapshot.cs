@@ -79,6 +79,9 @@ namespace CryptoPortfolioManager.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("TEXT");
 
+                    b.Property<DateTime?>("LastQuantityChangedAtUtc")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime?>("LastSyncedAtUtc")
                         .HasColumnType("TEXT");
 
@@ -117,6 +120,10 @@ namespace CryptoPortfolioManager.Infrastructure.Persistence.Migrations
                     b.HasIndex("WalletId");
 
                     b.HasIndex("Chain", "WalletAddress");
+
+                    b.HasIndex("WalletId", "AssetId")
+                        .IsUnique()
+                        .HasFilter("\"SourceType\" = 'Manual' AND \"WalletId\" IS NOT NULL");
 
                     b.HasIndex("AssetId", "Chain", "WalletAddress")
                         .IsUnique()
@@ -175,6 +182,9 @@ namespace CryptoPortfolioManager.Infrastructure.Persistence.Migrations
                     b.Property<string>("WalletAddress")
                         .HasMaxLength(120)
                         .HasColumnType("TEXT");
+
+                    b.Property<int?>("WalletId")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("WalletOrExchangeName")
                         .IsRequired()
@@ -265,6 +275,9 @@ namespace CryptoPortfolioManager.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("TEXT");
 
+                    b.Property<bool>("IsArchived")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("LastScanError")
                         .HasMaxLength(4000)
                         .HasColumnType("TEXT");
@@ -290,7 +303,8 @@ namespace CryptoPortfolioManager.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("Address")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("\"Address\" <> ''");
 
                     b.ToTable("Wallets");
                 });

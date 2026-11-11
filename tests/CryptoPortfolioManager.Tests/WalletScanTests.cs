@@ -59,7 +59,8 @@ public class WalletScanTests
         public required FakeExchange Exchange { get; init; }
         public required FakeTimeProvider Clock { get; init; }
         public required WalletScanService Scan { get; init; }
-        public WalletService Wallets => new(Repository);
+        public required WalletScanLock ScanLock { get; init; }
+        public WalletService Wallets => new(Repository, ScanLock, Clock);
         public WhitelistService Whitelist => new(Repository, Reader);
 
         public ValueTask DisposeAsync() => Db.DisposeAsync();
@@ -77,10 +78,11 @@ public class WalletScanTests
             var reader = new FakeReader();
             var exchange = new FakeExchange();
             var clock = new FakeTimeProvider(new DateTimeOffset(2026, 10, 25, 9, 0, 0, TimeSpan.Zero));
+            var scanLock = new WalletScanLock();
             return new Fixture
             {
                 Db = db, Repository = repository, Reader = reader, Exchange = exchange, Clock = clock,
-                Scan = new WalletScanService(repository, reader, [exchange], new WalletScanLock(), clock)
+                ScanLock = scanLock, Scan = new WalletScanService(repository, reader, [exchange], scanLock, clock)
             };
         }
 
@@ -328,17 +330,21 @@ public class WalletScanTests
     }
 
     [Fact]
-    public async Task DeletingWallet_LogsItsPositions()
+    public async Task DeletingWallet_PreservesPositionsAndTheirHistory()
     {
         await using var f = await Fixture.CreateAsync();
         f.Reader.Balances[(AddressA, Chain.Cronos, null)] = 100m;
         await f.Scan.ScanAsync(Ct);
 
         var wallet = (await f.Wallets.GetWalletsAsync(Ct)).Single(w => w.Address == AddressA);
-        await f.Wallets.DeleteAsync(wallet.Id, Ct);
-
         await using var check = f.Db.CreateContext();
-        Assert.Contains(await check.PositionChangeLogs.ToListAsync(Ct), l => l is { ChangeType: PositionChangeType.Removed, Reason: "Wallet deleted" });
+        var position = await check.Positions.SingleAsync(Ct);
+        check.PriceSnapshots.Add(new PriceSnapshot { AssetId = position.AssetId, PriceUsd = 0.01m, TimestampUtc = f.Clock.GetUtcNow().UtcDateTime, Source = "Test" });
+        await check.SaveChangesAsync(Ct);
+        Assert.True((await f.Wallets.DeleteAsync(wallet.Id, Ct)).Ok);
+        Assert.Single(await check.PositionChangeLogs.ToListAsync(Ct));
+        Assert.Single(await f.PositionsAsync());
+        Assert.Single(await f.Wallets.GetArchivedWalletsAsync(Ct));
     }
 
         [Fact]
@@ -803,6 +809,7 @@ public class WalletScanTests
         Assert.Empty(result.Errors);
         Assert.Equal(1, f.Exchange.Calls);
         Assert.Equal(7m, Assert.Single(await f.PositionsAsync()).Quantity);
+        Assert.Equal(f.Clock.GetUtcNow().UtcDateTime, (await f.Wallets.GetWalletsAsync(Ct)).Single().LastScannedAtUtc);
     }
 
     [Fact]
@@ -900,7 +907,7 @@ public class WalletScanTests
     }
 
     [Fact]
-    public async Task Wallet_Rename_UpdatesScannedPositionNames_ChangeOfAddress_RemovesThem_DeleteCascades()
+    public async Task Wallet_Rename_UpdatesScannedPositionNames_ChangeOfAddress_RemovesThem_DeleteArchives()
     {
         await using var f = await Fixture.CreateAsync();
         f.Reader.Balances[(AddressA, Chain.Cronos, null)] = 100m;
@@ -917,8 +924,15 @@ public class WalletScanTests
         await f.Scan.ScanAsync(Ct);
         Assert.Single(await f.PositionsAsync());
 
-                        await f.Wallets.DeleteAsync(wallet.Id, Ct);
-        Assert.Empty(await f.PositionsAsync());
+        await using (var ctx = f.Db.CreateContext())
+        {
+            var position = await ctx.Positions.SingleAsync(Ct);
+            ctx.PriceSnapshots.Add(new PriceSnapshot { AssetId = position.AssetId, PriceUsd = 1m, TimestampUtc = f.Clock.GetUtcNow().UtcDateTime, Source = "Test" });
+            await ctx.SaveChangesAsync(Ct);
+        }
+        Assert.True((await f.Wallets.DeleteAsync(wallet.Id, Ct)).Ok);
+        Assert.Single(await f.PositionsAsync());
+        Assert.Empty(await f.Wallets.GetWalletPositionsAsync(Ct));
     }
 
             [Fact]

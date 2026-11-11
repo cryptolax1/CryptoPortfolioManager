@@ -10,7 +10,9 @@ public class PortfolioRepository(IDbContextFactory<AppDbContext> factory) : IPor
     public async Task<IReadOnlyList<Asset>> GetAssetsWithPositionsAsync(CancellationToken ct = default)
     {
         await using var db = await factory.CreateDbContextAsync(ct);
-        return await db.Assets.AsNoTracking().Include(a => a.Positions).AsSplitQuery().ToListAsync(ct);
+        return await db.Assets.AsNoTracking()
+            .Include(a => a.Positions.Where(p => p.WalletId == null || !p.Wallet!.IsArchived))
+            .AsSplitQuery().ToListAsync(ct);
     }
 
     public async Task<IReadOnlyDictionary<int, PriceSnapshot>> GetLatestPricesAsync(CancellationToken ct = default)

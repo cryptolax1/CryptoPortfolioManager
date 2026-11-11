@@ -6,13 +6,16 @@ namespace CryptoPortfolioManager.Core.Abstractions;
 public interface IWalletRepository
 {
     Task<IReadOnlyList<Wallet>> GetWalletsAsync(CancellationToken ct = default);
+    Task<IReadOnlyList<Wallet>> GetArchivedWalletsAsync(CancellationToken ct = default);
     Task<Wallet> AddWalletAsync(Wallet wallet, CancellationToken ct = default);
 
     /// <summary>Updates address, name, type and source. Scanned positions of the wallet are removed when the address changes (the next scan recreates them).</summary>
     Task UpdateWalletAsync(Wallet wallet, CancellationToken ct = default);
 
-    /// <summary>Deletes the wallet and the positions that were read from it. Manual positions are never touched.</summary>
-    Task DeleteWalletAsync(int id, CancellationToken ct = default);
+    /// <summary>Archives only when all nonzero positions are priced and their total is less than $10.</summary>
+    Task<ServiceResult> ArchiveWalletAsync(int id, CancellationToken ct = default);
+    Task<ServiceResult> RestoreWalletAsync(int id, CancellationToken ct = default);
+    Task<ServiceResult> SetManualQuantityAsync(int walletId, int assetId, decimal quantity, DateTime nowUtc, CancellationToken ct = default);
 
     Task<IReadOnlyList<WhitelistedToken>> GetWhitelistAsync(CancellationToken ct = default);
 
@@ -54,4 +57,3 @@ public interface IWalletRepository
     /// <summary>Newest-first history of added, changed and removed positions.</summary>
     Task<IReadOnlyList<PositionChangeLog>> GetChangeLogAsync(int take, CancellationToken ct = default);
 }
-

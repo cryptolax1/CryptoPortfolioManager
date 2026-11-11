@@ -22,8 +22,7 @@ public class PortfolioService(IPortfolioRepository repository, TimeProvider cloc
         var history = await repository.GetPriceSnapshotsSinceAsync(targets.Values.Min() - ReferenceTolerance, ct);
         var historyByAsset = history.ToLookup(s => s.AssetId);
 
-        // The current view only holds what the wallets contain; assets without positions (e.g. whitelisted but
-        // empty, or sold since) keep their price history but are not shown.
+        // Assets without active positions keep their price history but are not shown. Manual zero positions remain visible.
         var rows = assets.Where(a => a.Positions.Count > 0).Select(asset =>
         {
             var price = latest.GetValueOrDefault(asset.Id)?.PriceUsd;

@@ -9,7 +9,7 @@
 <PageTitle>Wallets</PageTitle>
 
 <h1>Wallets</h1>
-<p class="muted lead">Wallets that the <strong>Re-scan wallets</strong> button reads. Only tokens on the <a href="/whitelist">whitelist</a> are picked up. A CEX is stored but is not scanned on-chain.</p>
+<p class="muted lead">Manage scanned and manual wallets. Exchange balances are read through the exchange's API; manual balances are entered on <a href="/manual-wallets">Manual wallets</a>.</p>
 
 @if (loadError is not null)
 {
@@ -39,13 +39,19 @@
             }
         </label>
         <label>Source
-            <input @bind="source" maxlength="100" placeholder="Metamask" />
+            @if (type == WalletType.Manual)
+            {
+                <input value="Manual" disabled />
+            }
+            else
+            {
+                <input @bind="source" maxlength="100" placeholder="Metamask" />
+            }
         </label>
                 <label class="wide">Wallet address
-            @if (type == WalletType.Cex)
+            @if (type is WalletType.Cex or WalletType.Manual)
             {
-                @* A CEX has no address: its balances come from the exchange's API, not from the blockchain. *@
-                <input class="mono" value="" disabled placeholder="A CEX needs no address: its balances are read through the exchange's API." />
+                <input class="mono" value="" disabled placeholder="This wallet does not need an address." />
             }
             else
             {
@@ -100,24 +106,12 @@ else
                     <td>@wallet.Source</td>
                     <td class="mono addr" title="@wallet.Address">@wallet.Address</td>
                     <td>
-                        @if (wallet.Type == WalletType.Cex)
-                        {
-                            <span class="muted">not scanned</span>
-                        }
-                        else if (wallet.LastScanError is not null)
-                        {
-                            <span class="delta-neg" title="@wallet.LastScanError">failed</span>
-                            <span class="muted">(@(wallet.LastScannedAtUtc is { } ok ? "last ok " + Format.Timestamp(ok) : "never succeeded"))</span>
-                        }
-                        else
-                        {
-                            <span class="@(wallet.LastScannedAtUtc is null ? "muted" : "")">@(wallet.LastScannedAtUtc is { } t ? Format.Timestamp(t) : "never")</span>
-                        }
+                        <WalletScanStatus Wallet="wallet" />
                     </td>
                     <td class="row-actions">
                         @if (confirmDeleteId == wallet.Id)
                         {
-                            <span class="muted">Delete wallet and its scanned positions?</span>
+                            <span class="muted">Delete hides this wallet and its holdings; it can be restored. Value must be under $10.</span>
                             <button class="btn btn-small btn-danger" @onclick="() => DeleteAsync(wallet.Id)">Delete</button>
                             <button class="btn btn-small btn-secondary" @onclick="() => confirmDeleteId = null">Cancel</button>
                         }
@@ -133,8 +127,29 @@ else
     </table>
 }
 
+@if (archivedWallets is { Count: > 0 })
+{
+    <h2>Deleted wallets</h2>
+    <p class="muted">Deleted wallets are hidden from active views and totals. Their holdings and history are retained.</p>
+    <table class="data-table">
+        <thead><tr><th>Name</th><th>Type</th><th>Source</th><th></th></tr></thead>
+        <tbody>
+            @foreach (var wallet in archivedWallets)
+            {
+                <tr>
+                    <td>@wallet.Name</td>
+                    <td>@Format.WalletTypeLabel(wallet.Type)</td>
+                    <td>@wallet.Source</td>
+                    <td><button class="btn btn-small btn-secondary" @onclick="() => RestoreAsync(wallet.Id)">Restore</button></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
 @code {
     private IReadOnlyList<Wallet>? wallets;
+    private IReadOnlyList<Wallet>? archivedWallets;
     private string? loadError;
     private string? formError;
     private bool busy;
@@ -153,6 +168,7 @@ else
         try
         {
             wallets = await WalletService.GetWalletsAsync();
+            archivedWallets = await WalletService.GetArchivedWalletsAsync();
             loadError = null;
         }
         catch (Exception ex)
@@ -167,7 +183,7 @@ else
     /// </summary>
     private void OnTypeChanged()
     {
-        if (type == WalletType.Cex) address = "";
+        if (type is WalletType.Cex or WalletType.Manual) address = "";
         formError = null;
     }
 
@@ -218,7 +234,12 @@ else
         confirmDeleteId = null;
         try
         {
-            await WalletService.DeleteAsync(id);
+            var result = await WalletService.DeleteAsync(id);
+            if (!result.Ok)
+            {
+                loadError = result.Error;
+                return;
+            }
             if (editingId == id) CancelEdit();
             await LoadAsync();
         }
@@ -226,5 +247,16 @@ else
         {
             loadError = $"Deleting failed: {ex.Message}";
         }
+    }
+
+    private async Task RestoreAsync(int id)
+    {
+        try
+        {
+            var result = await WalletService.RestoreAsync(id);
+            if (!result.Ok) { loadError = result.Error; return; }
+            await LoadAsync();
+        }
+        catch (Exception ex) { loadError = $"Restoring failed: {ex.Message}"; }
     }
 }

@@ -41,6 +41,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\CryptoPortfolioManager.Core\CryptoPortfolioManager.Core.csproj" />
     <ProjectReference Include="..\..\src\CryptoPortfolioManager.Infrastructure\CryptoPortfolioManager.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\CryptoPortfolioManager.Web\CryptoPortfolioManager.Web.csproj" />
   </ItemGroup>
 
 </Project>

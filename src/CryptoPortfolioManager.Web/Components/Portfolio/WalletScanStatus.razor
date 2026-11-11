@@ -1,0 +1,27 @@
+@using CryptoPortfolioManager.Core.Entities
+
+@if (Wallet.Type == WalletType.Manual)
+{
+    <span class="muted">managed manually</span>
+}
+else if (!Format.IsScannable(Wallet))
+{
+    <span class="muted">not scanned: @(Wallet.Type == WalletType.Cex ? "not a supported exchange" : "no on-chain address")</span>
+}
+else if (Wallet.LastScanError is not null)
+{
+    <span class="delta-neg" title="@Wallet.LastScanError">last scan failed</span>
+    <span class="muted">(@(Wallet.LastScannedAtUtc is { } ok ? "last ok " + Format.Timestamp(ok) : "never succeeded"))</span>
+}
+else
+{
+    <span class="@(Wallet.LastScannedAtUtc is null ? "muted" : "")">@(ShowLabel ? "last scan: " : "")@(Wallet.LastScannedAtUtc is { } t ? Format.Timestamp(t) : "never")</span>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public required Wallet Wallet { get; set; }
+
+    [Parameter]
+    public bool ShowLabel { get; set; }
+}
